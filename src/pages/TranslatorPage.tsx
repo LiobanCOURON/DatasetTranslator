@@ -541,10 +541,12 @@ export function TranslatorPage() {
       const batchSize = 100; // API limit per request
       const BUFFER_SIZE = 5; // Keep 5 batches in buffer (500 rows max)
       
-      // Translation statistics
-      let translationSuccessCount = 0;
-      let translationFailCount = 0;
-      let totalTranslationsAttempted = 0;
+      // Translation statistics - use refs to track across async operations
+      const stats = {
+        success: 0,
+        fail: 0,
+        total: 0
+      };
       
       // Reset React state counters
       setTranslationSuccessCount(0);
@@ -602,6 +604,10 @@ export function TranslatorPage() {
       
       // CONSUMER: Translate batches as they become available
       const translateBatches = async () => {
+        console.log(`\n🎯 Starting translation with fields:`, fields);
+        console.log(`🌍 Target language: ${targetLang}`);
+        console.log(`🔧 Method: ${method}`);
+        
         while (!downloadComplete || downloadBuffer.length > 0) {
           // Wait for a batch to be available
           if (downloadBuffer.length === 0) {
@@ -611,25 +617,34 @@ export function TranslatorPage() {
           
           // Get next batch from buffer
           const batch = downloadBuffer.shift()!;
-          console.log(`🔄 Translating batch at offset ${batch.offset}. Buffer size: ${downloadBuffer.length}/${BUFFER_SIZE}`);
+          console.log(`\n🔄 Translating batch at offset ${batch.offset}. Buffer size: ${downloadBuffer.length}/${BUFFER_SIZE}`);
           
           // Translate this batch
           for (let i = 0; i < batch.rows.length; i++) {
             const row = batch.rows[i];
             const translatedRow = { ...row.row };
+            console.log(`\n📄 Row ${globalRowIndex + i} data:`, row.row);
           
           // Translate each selected field
           for (const field of fields) {
+            console.log(`\n🔍 Processing field: "${field}" in row ${globalRowIndex + i}`);
+            console.log(`   Field value:`, row.row[field]);
+            console.log(`   Type:`, typeof row.row[field]);
+            
             if (row.row[field] && typeof row.row[field] === 'string') {
               const originalText = row.row[field];
               
               // Optimization: Skip translation for single-element cells (1 word or less)
               const wordCount = originalText.trim().split(/\s+/).length;
+              console.log(`   Word count: ${wordCount}`);
+              
               if (wordCount <= 1) {
-                console.log(`Skipping translation for single-element cell: "${originalText}"`);
+                console.log(`⏭️ Skipping translation for single-element cell: "${originalText}"`);
                 translatedRow[field] = originalText;
                 continue;
               }
+              
+              console.log(`✅ Starting translation for: "${originalText.substring(0, 50)}..."`);
               
               // Use translation method
               let translatedText = originalText; // Default to original text
@@ -850,15 +865,21 @@ export function TranslatorPage() {
               
               translatedRow[field] = translatedText;
               
+              console.log(`📊 Updating statistics - Original: "${originalText.substring(0, 30)}..." | Translated: "${translatedText.substring(0, 30)}..."`);
+              
               // Update translation statistics
-              totalTranslationsAttempted++;
-              if (verifyTranslation(originalText, translatedText)) {
-                translationSuccessCount++;
-                setTranslationSuccessCount(prev => prev + 1);
+              stats.total++;
+              const isVerified = verifyTranslation(originalText, translatedText);
+              console.log(`🔍 Verification result: ${isVerified}`);
+              
+              if (isVerified) {
+                stats.success++;
+                setTranslationSuccessCount(stats.success);
+                console.log(`✅ Translation successful! Stats: ${stats.success}/${stats.total}`);
               } else {
-                translationFailCount++;
-                setTranslationFailCount(prev => prev + 1);
-                console.warn(`⚠️ Translation failed for field "${field}" in row ${globalRowIndex + i}`);
+                stats.fail++;
+                setTranslationFailCount(stats.fail);
+                console.warn(`⚠️ Translation failed for field "${field}" in row ${globalRowIndex + i}. Stats: ${stats.fail}/${stats.total}`);
               }
               
               // Add to preview (keep only first 20 translations)
@@ -905,16 +926,16 @@ export function TranslatorPage() {
       console.log(`${'='.repeat(60)}`);
       console.log(`📊 Translation Statistics:`);
       console.log(`   • Total rows processed: ${translatedRows.length}`);
-      console.log(`   • Total translations attempted: ${totalTranslationsAttempted}`);
-      console.log(`   • Successful translations: ${translationSuccessCount} (${Math.round((translationSuccessCount/totalTranslationsAttempted)*100)}%)`);
-      console.log(`   • Failed translations: ${translationFailCount} (${Math.round((translationFailCount/totalTranslationsAttempted)*100)}%)`);
+      console.log(`   • Total translations attempted: ${stats.total}`);
+      console.log(`   • Successful translations: ${stats.success} (${stats.total > 0 ? Math.round((stats.success/stats.total)*100) : 0}%)`);
+      console.log(`   • Failed translations: ${stats.fail} (${stats.total > 0 ? Math.round((stats.fail/stats.total)*100) : 0}%)`);
       console.log(`${'='.repeat(60)}\n`);
       
       // Store translated data
       setTranslatedData(translatedRows);
       
       // Show warning if too many translations failed
-      const failRate = (translationFailCount / totalTranslationsAttempted) * 100;
+      const failRate = stats.total > 0 ? (stats.fail / stats.total) * 100 : 0;
       if (failRate > 50) {
         console.error(`⚠️ WARNING: ${failRate.toFixed(1)}% of translations failed! Check your API configuration.`);
       }      
