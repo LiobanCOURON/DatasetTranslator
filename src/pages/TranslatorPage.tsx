@@ -84,8 +84,10 @@ export function TranslatorPage() {
   const [outputName, setOutputName] = useState('');
   const [method, setMethod] = useState<TranslationMethod>('api');
   const [autoUpload, setAutoUpload] = useState(true);
-  const [fields, setFields] = useState<string[]>(['text']);
+  const [fields, setFields] = useState<string[]>([]);
   const [showFields, setShowFields] = useState(false);
+  const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
+  const [isDetectingColumns, setIsDetectingColumns] = useState(false);
   
   // Save HF token to localStorage
   useEffect(() => {
@@ -116,6 +118,16 @@ export function TranslatorPage() {
   const [selectedDataset, setSelectedDataset] = useState<HFDataset | null>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Auto-detect columns when dataset name changes (manual input)
+  useEffect(() => {
+    if (datasetName && datasetName.includes('/') && !selectedDataset) {
+      const timeout = setTimeout(() => {
+        detectColumns(datasetName);
+      }, 800);
+      return () => clearTimeout(timeout);
+    }
+  }, [datasetName, selectedDataset]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -178,6 +190,8 @@ export function TranslatorPage() {
     setDatasetName(dataset.id);
     setSearchQuery(dataset.id);
     setShowDropdown(false);
+    // Detect columns automatically
+    detectColumns(dataset.id);
   };
 
   // Clear selection
@@ -186,6 +200,32 @@ export function TranslatorPage() {
     setDatasetName('');
     setSearchQuery('');
     setSearchResults([]);
+    setDetectedColumns([]);
+    setFields([]);
+  };
+
+  // Detect columns from dataset
+  const detectColumns = async (datasetId: string) => {
+    setIsDetectingColumns(true);
+    try {
+      const response = await fetch(
+        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(datasetId)}&config=default&split=train`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        if (data.first_rows && data.first_rows.length > 0) {
+          const columns = Object.keys(data.first_rows[0]);
+          setDetectedColumns(columns);
+          // Select all columns by default
+          setFields(columns);
+          setShowFields(true);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to detect columns:', error);
+    } finally {
+      setIsDetectingColumns(false);
+    }
   };
 
   // Simulation state
@@ -530,29 +570,70 @@ export function TranslatorPage() {
               >
                 {showFields ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 {t(language, 'translator.fields')}
+                {detectedColumns.length > 0 && (
+                  <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300">
+                    {fields.length}/{detectedColumns.length}
+                  </span>
+                )}
               </button>
               {showFields && (
                 <div className="mt-2 p-3 glass-card rounded-xl">
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">{t(language, 'translator.fields.help')}</p>
-                  <div className="flex flex-wrap gap-2">
-                    {['text', 'sentence', 'question', 'answer', 'context', 'title', 'summary', 'translation'].map((field) => (
-                      <label key={field} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/40 dark:bg-white/10 cursor-pointer hover:bg-white/60 dark:hover:bg-white/20 transition-all">
-                        <input
-                          type="checkbox"
-                          checked={fields.includes(field)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setFields([...fields, field]);
-                            } else {
-                              setFields(fields.filter((f) => f !== field));
-                            }
-                          }}
-                          className="rounded border-gray-300 text-blue-500 focus:ring-blue-400"
-                        />
-                        <span className="text-sm text-gray-700 dark:text-gray-300">{field}</span>
-                      </label>
-                    ))}
-                  </div>
+                  {isDetectingColumns ? (
+                    <div className="flex items-center justify-center py-4">
+                      <Loader2 className="w-5 h-5 animate-spin text-blue-500" />
+                      <span className="ml-2 text-sm text-gray-500 dark:text-gray-400">
+                        {t(language, 'translator.fields.detecting')}
+                      </span>
+                    </div>
+                  ) : detectedColumns.length > 0 ? (
+                    <>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {t(language, 'translator.fields.help')}
+                        </p>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => setFields([...detectedColumns])}
+                            className="text-xs text-blue-500 hover:text-blue-600 transition-colors"
+                          >
+                            {t(language, 'translator.fields.selectAll')}
+                          </button>
+                          <button
+                            onClick={() => setFields([])}
+                            className="text-xs text-red-500 hover:text-red-600 transition-colors"
+                          >
+                            {t(language, 'translator.fields.deselectAll')}
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {detectedColumns.map((field) => (
+                          <label
+                            key={field}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/40 dark:bg-white/10 cursor-pointer hover:bg-white/60 dark:hover:bg-white/20 transition-all"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={fields.includes(field)}
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setFields([...fields, field]);
+                                } else {
+                                  setFields(fields.filter((f) => f !== field));
+                                }
+                              }}
+                              className="rounded border-gray-300 text-blue-500 focus:ring-blue-400"
+                            />
+                            <span className="text-sm text-gray-700 dark:text-gray-300">{field}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </>
+                  ) : (
+                    <p className="text-xs text-gray-500 dark:text-gray-400">
+                      {t(language, 'translator.fields.noDataset')}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
