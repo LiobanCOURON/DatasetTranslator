@@ -168,9 +168,26 @@ export function TranslatorPage() {
       
       console.log('Info endpoint failed, trying fallback...');
       
-      // Fallback: try to get first rows if info endpoint failed
+      // Fallback: try to get splits first to find valid config/split
+      const splitsResponse = await fetch(
+        `https://datasets-server.huggingface.co/splits?dataset=${encodeURIComponent(datasetId)}`
+      );
+      
+      let configName = 'default';
+      let splitName = 'train';
+      
+      if (splitsResponse.ok) {
+        const splitsData = await splitsResponse.json();
+        if (splitsData.splits && splitsData.splits.length > 0) {
+          configName = splitsData.splits[0].config;
+          splitName = splitsData.splits[0].split;
+          console.log('Found config/split from splits endpoint:', configName, splitName);
+        }
+      }
+      
+      // Now try to get first rows with the correct config/split
       const response = await fetch(
-        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(datasetId)}&config=default&split=train`
+        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(datasetId)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}`
       );
       
       console.log('First rows response status:', response.status);
@@ -180,7 +197,7 @@ export function TranslatorPage() {
         console.log('First rows data:', data);
         
         if (data.first_rows && data.first_rows.length > 0) {
-          const columns = Object.keys(data.first_rows[0]);
+          const columns = Object.keys(data.first_rows[0].row || data.first_rows[0]);
           console.log('Detected columns from first rows:', columns);
           setDetectedColumns(columns);
           setFields(columns);
@@ -299,7 +316,11 @@ export function TranslatorPage() {
     }
     
     if (fields.length === 0) {
-      alert('Please select at least one field to translate');
+      if (detectedColumns.length === 0) {
+        alert('No columns detected. Please select a valid dataset first.');
+      } else {
+        alert('Please select at least one field to translate');
+      }
       return;
     }
 
@@ -309,6 +330,7 @@ export function TranslatorPage() {
     console.log('Fields:', fields);
     console.log('Method:', method);
     console.log('Target language:', targetLang);
+    console.log('Total rows:', totalRows);
 
     const jobId = uuidv4();
     const job: TranslationJob = {
@@ -447,7 +469,7 @@ export function TranslatorPage() {
             }
             
             // Use translation method
-            let translatedText = '';
+            let translatedText = originalText; // Default to original text
             
             if (method === 'api') {
               // API translation via MyMemory API (free, no key needed)
@@ -458,17 +480,34 @@ export function TranslatorPage() {
                   `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
                 );
                 
-                if (!response.ok) {
+                if (response.status === 429) {
+                  console.warn('Rate limit exceeded, waiting 5 seconds...');
+                  await new Promise(resolve => setTimeout(resolve, 5000));
+                  // Retry once after waiting
+                  const retryResponse = await fetch(
+                    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
+                  );
+                  if (retryResponse.ok) {
+                    const retryData = await retryResponse.json();
+                    if (retryData.responseStatus === 200 && retryData.responseData?.translatedText) {
+                      translatedText = retryData.responseData.translatedText;
+                    } else {
+                      translatedText = originalText;
+                    }
+                  } else {
+                    translatedText = originalText;
+                  }
+                } else if (!response.ok) {
                   throw new Error(`API error: ${response.status}`);
-                }
-                
-                const data = await response.json();
-                
-                if (data.responseStatus === 200 && data.responseData?.translatedText) {
-                  translatedText = data.responseData.translatedText;
                 } else {
-                  console.warn('Translation failed for row', i, 'field', field, ':', data.responseDetails);
-                  translatedText = originalText;
+                  const data = await response.json();
+                  
+                  if (data.responseStatus === 200 && data.responseData?.translatedText) {
+                    translatedText = data.responseData.translatedText;
+                  } else {
+                    console.warn('Translation failed for row', i, 'field', field, ':', data.responseDetails);
+                    translatedText = originalText;
+                  }
                 }
               } catch (error) {
                 console.error('Translation error for row', i, 'field', field, ':', error);
@@ -504,8 +543,8 @@ export function TranslatorPage() {
             
             translatedRow[field] = translatedText;
             
-            // Add to preview
-            if (i < 20) {
+            // Add to preview (keep only first 20 translations)
+            if (previewEntries.length < 20) {
               previewEntries.push({
                 original: originalText.substring(0, 100),
                 translated: translatedText.substring(0, 100),
@@ -518,7 +557,7 @@ export function TranslatorPage() {
         translatedRows.push(translatedRow);
         
         // Update progress
-        const progress = Math.round(((i + 1) / rows.length) * 100);
+        const progress = Math.round(((i + 1) / totalRowsInDataset) * 100);
         setProgress(progress);
         setTranslatedRows(i + 1);
         setPreviewData(previewEntries.slice(0, 20));
@@ -526,7 +565,7 @@ export function TranslatorPage() {
         
         // Delay to avoid rate limiting (MyMemory allows ~10 req/sec for anonymous users)
         if (method === 'api') {
-          await new Promise(resolve => setTimeout(resolve, 150));
+          await new Promise(resolve => setTimeout(resolve, 200)); // Increased from 150ms to 200ms
         }
       }
       
@@ -541,16 +580,85 @@ export function TranslatorPage() {
         updateJob(jobId, { status: 'uploading', progress: 100 });
         setStatus('uploading');
         
-        // Note: Actual upload to HF would require the @huggingface/hub package
-        // For now, we'll just mark it as done with the URL
-        const hfUrl = `https://huggingface.co/datasets/${userName}/${outputName || `${datasetName}-translated-${targetLang}`}`;
+        const datasetId = `${userName}/${outputName || `${datasetName.split('/').pop()}-translated-${targetLang}`}`;
+        const hfUrl = `https://huggingface.co/datasets/${datasetId}`;
         
-        setTimeout(() => {
+        try {
+          // Step 1: Check if dataset exists
+          console.log('Checking if dataset exists...');
+          const checkResponse = await fetch(`https://huggingface.co/api/datasets/${datasetId}`, {
+            headers: {
+              'Authorization': `Bearer ${hfKey}`,
+            },
+          });
+          
+          // Step 2: Create the dataset repository if it doesn't exist
+          if (checkResponse.status === 404) {
+            console.log('Creating dataset repository...');
+            const createResponse = await fetch(`https://huggingface.co/api/datasets`, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${hfKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                type: 'dataset',
+                name: datasetId.split('/').pop(),
+                private: false,
+              }),
+            });
+            
+            if (!createResponse.ok) {
+              const errorData = await createResponse.json();
+              throw new Error(`Failed to create dataset: ${errorData.error || createResponse.statusText}`);
+            }
+            
+            console.log('Dataset repository created');
+          } else if (!checkResponse.ok) {
+            throw new Error(`Failed to check dataset: ${checkResponse.statusText}`);
+          } else {
+            console.log('Dataset already exists');
+          }
+          
+          // Step 3: Upload the data as JSON using preupload endpoint
+          console.log('Uploading translated data...');
+          const jsonData = JSON.stringify(translatedRows, null, 2);
+          
+          // Create a FormData object for file upload
+          const formData = new FormData();
+          const blob = new Blob([jsonData], { type: 'application/json' });
+          formData.append('file', blob, 'data/train.json');
+          
+          const uploadResponse = await fetch(
+            `https://huggingface.co/api/datasets/${datasetId}/upload/main/data/train.json`,
+            {
+              method: 'PUT',
+              headers: {
+                'Authorization': `Bearer ${hfKey}`,
+              },
+              body: blob,
+            }
+          );
+          
+          if (!uploadResponse.ok) {
+            const errorData = await uploadResponse.json().catch(() => ({}));
+            throw new Error(`Failed to upload data: ${errorData.error || uploadResponse.statusText}`);
+          }
+          
+          console.log('✅ Data uploaded successfully!');
+          
           updateJob(jobId, { status: 'done', hfUrl });
           setStatus('done');
           setIsRunning(false);
-          console.log('Translation completed!');
-        }, 1000);
+          console.log('Translation completed and uploaded!');
+        } catch (uploadError) {
+          console.error('Upload failed:', uploadError);
+          // Still mark as done but without upload
+          updateJob(jobId, { status: 'done', progress: 100 });
+          setStatus('done');
+          setIsRunning(false);
+          alert(`Translation completed but upload failed: ${uploadError instanceof Error ? uploadError.message : 'Unknown error'}\n\nYou can download the translated dataset manually.`);
+        }
       } else {
         updateJob(jobId, { status: 'done', progress: 100 });
         setStatus('done');
@@ -569,11 +677,13 @@ export function TranslatorPage() {
   };
 
   const handleStop = () => {
+    console.log('🛑 Stopping translation...');
     setIsRunning(false);
     if (currentJob) {
       updateJob(currentJob.id, { status: 'paused' });
     }
     setStatus('idle');
+    alert('Translation stopped. You can resume later from the History page.');
   };
 
   const getStatusIcon = () => {
