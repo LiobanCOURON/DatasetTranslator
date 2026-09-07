@@ -378,24 +378,53 @@ export function TranslatorPage() {
       // Update total rows
       setTotalRows(totalRowsInDataset);
       
-      // Download first rows for translation
-      const rowsResponse = await fetch(
-        `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(datasetName)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}&offset=0&length=${Math.min(totalRowsInDataset, 100)}`
-      );
+      // Download ALL rows from the dataset (not just 100)
+      console.log(`Downloading all ${totalRowsInDataset} rows from dataset...`);
+      const allRows: any[] = [];
+      const batchSize = 100; // API limit per request
+      let offset = 0;
       
-      if (!rowsResponse.ok) {
-        throw new Error('Failed to download dataset rows');
+      while (offset < totalRowsInDataset) {
+        const currentBatchSize = Math.min(batchSize, totalRowsInDataset - offset);
+        const rowsResponse = await fetch(
+          `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(datasetName)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}&offset=${offset}&length=${currentBatchSize}`
+        );
+        
+        if (!rowsResponse.ok) {
+          throw new Error(`Failed to download dataset rows at offset ${offset}`);
+        }
+        
+        const rowsData = await rowsResponse.json();
+        const batchRows = rowsData.rows || [];
+        
+        if (batchRows.length === 0) {
+          break; // No more rows
+        }
+        
+        allRows.push(...batchRows);
+        offset += batchRows.length;
+        
+        console.log(`Downloaded batch: ${batchRows.length} rows (total: ${allRows.length}/${totalRowsInDataset})`);
+        
+        // Update progress
+        const downloadProgress = Math.round((allRows.length / totalRowsInDataset) * 100);
+        setProgress(downloadProgress);
+        updateJob(jobId, { progress: downloadProgress });
+        
+        // Small delay to avoid rate limiting
+        if (offset < totalRowsInDataset) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
       }
       
-      const rowsData = await rowsResponse.json();
-      const rows = rowsData.rows || [];
-      
-      console.log(`Downloaded ${rows.length} rows`);
+      const rows = allRows;
+      console.log(`✅ Downloaded all ${rows.length} rows`);
       
       // Phase 2: Translate
       console.log('Phase 2: Translating...');
-      updateJob(jobId, { status: 'translating', totalRows: rows.length });
+      updateJob(jobId, { status: 'translating', totalRows: totalRowsInDataset });
       setStatus('translating');
+      setProgress(0);
       
       const translatedRows: any[] = [];
       const previewEntries: Array<{original: string, translated: string, field: string}> = [];
@@ -501,7 +530,7 @@ export function TranslatorPage() {
         }
       }
       
-      console.log(`Translated ${translatedRows.length} rows`);
+      console.log(`✅ Translated ${translatedRows.length} rows (entire dataset as one)`);
       
       // Store translated data
       setTranslatedData(translatedRows);
