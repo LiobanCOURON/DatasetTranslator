@@ -400,8 +400,8 @@ export function TranslatorPage() {
       // Update total rows
       setTotalRows(totalRowsInDataset);
       
-      // Phase 2: Stream and translate batch by batch (memory efficient)
-      console.log('Phase 2: Streaming and translating...');
+      // Phase 2: Parallel streaming with producer-consumer pattern
+      console.log('Phase 2: Starting parallel streaming...');
       updateJob(jobId, { status: 'translating', totalRows: totalRowsInDataset });
       setStatus('translating');
       setProgress(0);
@@ -409,35 +409,75 @@ export function TranslatorPage() {
       const translatedRows: any[] = [];
       const previewEntries: Array<{original: string, translated: string, field: string}> = [];
       const batchSize = 100; // API limit per request
-      let offset = 0;
+      const BUFFER_SIZE = 5; // Keep 5 batches in buffer (500 rows max)
+      
+      // Buffer for downloaded batches (producer-consumer pattern)
+      interface BatchData {
+        offset: number;
+        rows: any[];
+      }
+      const downloadBuffer: BatchData[] = [];
+      let downloadComplete = false;
       let globalRowIndex = 0;
       
-      // Stream batch by batch - only keep one batch in memory at a time
-      while (offset < totalRowsInDataset) {
-        const currentBatchSize = Math.min(batchSize, totalRowsInDataset - offset);
-        
-        // Download one batch
-        const rowsResponse = await fetch(
-          `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(datasetName)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}&offset=${offset}&length=${currentBatchSize}`
-        );
-        
-        if (!rowsResponse.ok) {
-          throw new Error(`Failed to download dataset rows at offset ${offset}`);
+      // PRODUCER: Download batches in parallel
+      const downloadBatches = async () => {
+        let offset = 0;
+        while (offset < totalRowsInDataset) {
+          // Wait if buffer is full
+          while (downloadBuffer.length >= BUFFER_SIZE) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
+          
+          const currentBatchSize = Math.min(batchSize, totalRowsInDataset - offset);
+          
+          try {
+            const rowsResponse = await fetch(
+              `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(datasetName)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}&offset=${offset}&length=${currentBatchSize}`
+            );
+            
+            if (!rowsResponse.ok) {
+              throw new Error(`Failed to download dataset rows at offset ${offset}`);
+            }
+            
+            const rowsData = await rowsResponse.json();
+            const batchRows = rowsData.rows || [];
+            
+            if (batchRows.length === 0) {
+              break;
+            }
+            
+            // Add to buffer
+            downloadBuffer.push({ offset, rows: batchRows });
+            console.log(`📥 Downloaded batch ${offset/100 + 1}. Buffer size: ${downloadBuffer.length}/${BUFFER_SIZE}`);
+            
+            offset += batchRows.length;
+          } catch (error) {
+            console.error('Download error:', error);
+            throw error;
+          }
         }
-        
-        const rowsData = await rowsResponse.json();
-        const batchRows = rowsData.rows || [];
-        
-        if (batchRows.length === 0) {
-          break; // No more rows
-        }
-        
-        console.log(`📥 Downloaded batch: ${batchRows.length} rows (offset: ${offset}, total processed: ${globalRowIndex + batchRows.length}/${totalRowsInDataset})`);
-        
-        // Translate this batch immediately
-        for (let i = 0; i < batchRows.length; i++) {
-          const row = batchRows[i];
-          const translatedRow = { ...row.row };
+        downloadComplete = true;
+        console.log('✅ All batches downloaded');
+      };
+      
+      // CONSUMER: Translate batches as they become available
+      const translateBatches = async () => {
+        while (!downloadComplete || downloadBuffer.length > 0) {
+          // Wait for a batch to be available
+          if (downloadBuffer.length === 0) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            continue;
+          }
+          
+          // Get next batch from buffer
+          const batch = downloadBuffer.shift()!;
+          console.log(`🔄 Translating batch at offset ${batch.offset}. Buffer size: ${downloadBuffer.length}/${BUFFER_SIZE}`);
+          
+          // Translate this batch
+          for (let i = 0; i < batch.rows.length; i++) {
+            const row = batch.rows[i];
+            const translatedRow = { ...row.row };
           
           // Translate each selected field
           for (const field of fields) {
@@ -553,19 +593,20 @@ export function TranslatorPage() {
           }
         }
         
-        // Move to next batch
-        offset += batchRows.length;
-        globalRowIndex += batchRows.length;
-        
+        globalRowIndex += batch.rows.length;
         console.log(`✅ Batch translated. Progress: ${globalRowIndex}/${totalRowsInDataset}`);
-        
-        // Small delay between batches
-        if (offset < totalRowsInDataset) {
-          await new Promise(resolve => setTimeout(resolve, 300));
-        }
       }
       
-      console.log(`✅ Translated all ${translatedRows.length} rows (streaming mode)`);
+      console.log('✅ All batches translated');
+    };
+    
+    // Run producer and consumer in parallel
+    await Promise.all([
+      downloadBatches(),
+      translateBatches()
+    ]);
+    
+    console.log(`✅ Translated all ${translatedRows.length} rows (parallel streaming)`);
       
       // Store translated data
       setTranslatedData(translatedRows);
