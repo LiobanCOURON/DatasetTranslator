@@ -400,14 +400,23 @@ export function TranslatorPage() {
       // Update total rows
       setTotalRows(totalRowsInDataset);
       
-      // Download ALL rows from the dataset (not just 100)
-      console.log(`Downloading all ${totalRowsInDataset} rows from dataset...`);
-      const allRows: any[] = [];
+      // Phase 2: Stream and translate batch by batch (memory efficient)
+      console.log('Phase 2: Streaming and translating...');
+      updateJob(jobId, { status: 'translating', totalRows: totalRowsInDataset });
+      setStatus('translating');
+      setProgress(0);
+      
+      const translatedRows: any[] = [];
+      const previewEntries: Array<{original: string, translated: string, field: string}> = [];
       const batchSize = 100; // API limit per request
       let offset = 0;
+      let globalRowIndex = 0;
       
+      // Stream batch by batch - only keep one batch in memory at a time
       while (offset < totalRowsInDataset) {
         const currentBatchSize = Math.min(batchSize, totalRowsInDataset - offset);
+        
+        // Download one batch
         const rowsResponse = await fetch(
           `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(datasetName)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}&offset=${offset}&length=${currentBatchSize}`
         );
@@ -423,153 +432,140 @@ export function TranslatorPage() {
           break; // No more rows
         }
         
-        allRows.push(...batchRows);
-        offset += batchRows.length;
+        console.log(`📥 Downloaded batch: ${batchRows.length} rows (offset: ${offset}, total processed: ${globalRowIndex + batchRows.length}/${totalRowsInDataset})`);
         
-        console.log(`Downloaded batch: ${batchRows.length} rows (total: ${allRows.length}/${totalRowsInDataset})`);
-        
-        // Update progress
-        const downloadProgress = Math.round((allRows.length / totalRowsInDataset) * 100);
-        setProgress(downloadProgress);
-        updateJob(jobId, { progress: downloadProgress });
-        
-        // Small delay to avoid rate limiting
-        if (offset < totalRowsInDataset) {
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-      }
-      
-      const rows = allRows;
-      console.log(`✅ Downloaded all ${rows.length} rows`);
-      
-      // Phase 2: Translate
-      console.log('Phase 2: Translating...');
-      updateJob(jobId, { status: 'translating', totalRows: totalRowsInDataset });
-      setStatus('translating');
-      setProgress(0);
-      
-      const translatedRows: any[] = [];
-      const previewEntries: Array<{original: string, translated: string, field: string}> = [];
-      
-      for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        const translatedRow = { ...row.row };
-        
-        // Translate each selected field
-        for (const field of fields) {
-          if (row.row[field] && typeof row.row[field] === 'string') {
-            const originalText = row.row[field];
-            
-            // Optimization: Skip translation for single-element cells (1 word or less)
-            const wordCount = originalText.trim().split(/\s+/).length;
-            if (wordCount <= 1) {
-              console.log(`Skipping translation for single-element cell: "${originalText}"`);
-              translatedRow[field] = originalText;
-              continue;
-            }
-            
-            // Use translation method
-            let translatedText = originalText; // Default to original text
-            
-            if (method === 'api') {
-              // API translation via MyMemory API (free, no key needed)
-              try {
-                // Truncate long texts to avoid API limits
-                const textToTranslate = originalText.length > 500 ? originalText.substring(0, 500) : originalText;
-                const response = await fetch(
-                  `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
-                );
-                
-                if (response.status === 429) {
-                  console.warn('Rate limit exceeded, waiting 5 seconds...');
-                  await new Promise(resolve => setTimeout(resolve, 5000));
-                  // Retry once after waiting
-                  const retryResponse = await fetch(
+        // Translate this batch immediately
+        for (let i = 0; i < batchRows.length; i++) {
+          const row = batchRows[i];
+          const translatedRow = { ...row.row };
+          
+          // Translate each selected field
+          for (const field of fields) {
+            if (row.row[field] && typeof row.row[field] === 'string') {
+              const originalText = row.row[field];
+              
+              // Optimization: Skip translation for single-element cells (1 word or less)
+              const wordCount = originalText.trim().split(/\s+/).length;
+              if (wordCount <= 1) {
+                console.log(`Skipping translation for single-element cell: "${originalText}"`);
+                translatedRow[field] = originalText;
+                continue;
+              }
+              
+              // Use translation method
+              let translatedText = originalText; // Default to original text
+              
+              if (method === 'api') {
+                // API translation via MyMemory API (free, no key needed)
+                try {
+                  // Truncate long texts to avoid API limits
+                  const textToTranslate = originalText.length > 500 ? originalText.substring(0, 500) : originalText;
+                  const response = await fetch(
                     `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
                   );
-                  if (retryResponse.ok) {
-                    const retryData = await retryResponse.json();
-                    if (retryData.responseStatus === 200 && retryData.responseData?.translatedText) {
-                      translatedText = retryData.responseData.translatedText;
+                  
+                  if (response.status === 429) {
+                    console.warn('Rate limit exceeded, waiting 5 seconds...');
+                    await new Promise(resolve => setTimeout(resolve, 5000));
+                    // Retry once after waiting
+                    const retryResponse = await fetch(
+                      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
+                    );
+                    if (retryResponse.ok) {
+                      const retryData = await retryResponse.json();
+                      if (retryData.responseStatus === 200 && retryData.responseData?.translatedText) {
+                        translatedText = retryData.responseData.translatedText;
+                      } else {
+                        translatedText = originalText;
+                      }
                     } else {
                       translatedText = originalText;
                     }
+                  } else if (!response.ok) {
+                    throw new Error(`API error: ${response.status}`);
                   } else {
-                    translatedText = originalText;
+                    const data = await response.json();
+                    
+                    if (data.responseStatus === 200 && data.responseData?.translatedText) {
+                      translatedText = data.responseData.translatedText;
+                    } else {
+                      console.warn('Translation failed for row', globalRowIndex + i, 'field', field, ':', data.responseDetails);
+                      translatedText = originalText;
+                    }
                   }
-                } else if (!response.ok) {
-                  throw new Error(`API error: ${response.status}`);
-                } else {
-                  const data = await response.json();
-                  
-                  if (data.responseStatus === 200 && data.responseData?.translatedText) {
-                    translatedText = data.responseData.translatedText;
-                  } else {
-                    console.warn('Translation failed for row', i, 'field', field, ':', data.responseDetails);
-                    translatedText = originalText;
-                  }
+                } catch (error) {
+                  console.error('Translation error for row', globalRowIndex + i, 'field', field, ':', error);
+                  translatedText = originalText;
                 }
-              } catch (error) {
-                console.error('Translation error for row', i, 'field', field, ':', error);
+              } else if (method === 'llm') {
+                // LLM translation
+                try {
+                  const response = await fetch(`${llmEndpoint}/chat/completions`, {
+                    method: 'POST',
+                    headers: {
+                      'Content-Type': 'application/json',
+                      'Authorization': `Bearer ${llmApiKey}`,
+                    },
+                    body: JSON.stringify({
+                      model: llmModel,
+                      messages: [
+                        { role: 'system', content: `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.` },
+                        { role: 'user', content: originalText }
+                      ],
+                    }),
+                  });
+                  const data = await response.json();
+                  translatedText = data.choices?.[0]?.message?.content || originalText;
+                } catch (error) {
+                  console.error('LLM translation error:', error);
+                  translatedText = originalText;
+                }
+              } else {
+                // Local models - for now just copy the text
                 translatedText = originalText;
               }
-            } else if (method === 'llm') {
-              // LLM translation
-              try {
-                const response = await fetch(`${llmEndpoint}/chat/completions`, {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${llmApiKey}`,
-                  },
-                  body: JSON.stringify({
-                    model: llmModel,
-                    messages: [
-                      { role: 'system', content: `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.` },
-                      { role: 'user', content: originalText }
-                    ],
-                  }),
+              
+              translatedRow[field] = translatedText;
+              
+              // Add to preview (keep only first 20 translations)
+              if (previewEntries.length < 20) {
+                previewEntries.push({
+                  original: originalText.substring(0, 100),
+                  translated: translatedText.substring(0, 100),
+                  field: field,
                 });
-                const data = await response.json();
-                translatedText = data.choices?.[0]?.message?.content || originalText;
-              } catch (error) {
-                console.error('LLM translation error:', error);
-                translatedText = originalText;
               }
-            } else {
-              // Local models - for now just copy the text
-              translatedText = originalText;
             }
-            
-            translatedRow[field] = translatedText;
-            
-            // Add to preview (keep only first 20 translations)
-            if (previewEntries.length < 20) {
-              previewEntries.push({
-                original: originalText.substring(0, 100),
-                translated: translatedText.substring(0, 100),
-                field: field,
-              });
-            }
+          }
+          
+          translatedRows.push(translatedRow);
+          
+          // Update progress
+          const progress = Math.round(((globalRowIndex + i + 1) / totalRowsInDataset) * 100);
+          setProgress(progress);
+          setTranslatedRows(globalRowIndex + i + 1);
+          setPreviewData(previewEntries.slice(0, 20));
+          updateJob(jobId, { translatedRows: globalRowIndex + i + 1, progress });
+          
+          // Delay to avoid rate limiting (MyMemory allows ~10 req/sec for anonymous users)
+          if (method === 'api') {
+            await new Promise(resolve => setTimeout(resolve, 200));
           }
         }
         
-        translatedRows.push(translatedRow);
+        // Move to next batch
+        offset += batchRows.length;
+        globalRowIndex += batchRows.length;
         
-        // Update progress
-        const progress = Math.round(((i + 1) / totalRowsInDataset) * 100);
-        setProgress(progress);
-        setTranslatedRows(i + 1);
-        setPreviewData(previewEntries.slice(0, 20));
-        updateJob(jobId, { translatedRows: i + 1, progress });
+        console.log(`✅ Batch translated. Progress: ${globalRowIndex}/${totalRowsInDataset}`);
         
-        // Delay to avoid rate limiting (MyMemory allows ~10 req/sec for anonymous users)
-        if (method === 'api') {
-          await new Promise(resolve => setTimeout(resolve, 200)); // Increased from 150ms to 200ms
+        // Small delay between batches
+        if (offset < totalRowsInDataset) {
+          await new Promise(resolve => setTimeout(resolve, 300));
         }
       }
       
-      console.log(`✅ Translated ${translatedRows.length} rows (entire dataset as one)`);
+      console.log(`✅ Translated all ${translatedRows.length} rows (streaming mode)`);
       
       // Store translated data
       setTranslatedData(translatedRows);
