@@ -128,40 +128,59 @@ export function TranslatorPage() {
 
   // Detect columns from dataset - defined early to be used in useEffect
   const detectColumns = async (datasetId: string) => {
+    console.log('Detecting columns for dataset:', datasetId);
     setIsDetectingColumns(true);
+    setDetectedColumns([]);
     try {
-      // Try to get dataset info first to find available configs
+      // Get dataset info to extract column names directly from features
       const infoResponse = await fetch(
         `https://datasets-server.huggingface.co/info?dataset=${encodeURIComponent(datasetId)}`
       );
       
-      let configName = 'default';
-      let splitName = 'train';
+      console.log('Info response status:', infoResponse.status);
       
       if (infoResponse.ok) {
-        const infoData = await infoResponse.json();
-        if (infoData.dataset_info && Object.keys(infoData.dataset_info).length > 0) {
+        const data = await infoResponse.json();
+        console.log('Info response data:', data);
+        
+        if (data.dataset_info && Object.keys(data.dataset_info).length > 0) {
           // Get first available config
-          configName = Object.keys(infoData.dataset_info)[0];
-          const configInfo = infoData.dataset_info[configName];
-          if (configInfo && configInfo.splits && Object.keys(configInfo.splits).length > 0) {
-            // Get first available split
-            splitName = Object.keys(configInfo.splits)[0];
+          const configName = Object.keys(data.dataset_info)[0];
+          const configInfo = data.dataset_info[configName];
+          
+          console.log('Config name:', configName, 'Config info:', configInfo);
+          
+          // Extract column names from features
+          if (configInfo && configInfo.features) {
+            const columns = Object.keys(configInfo.features);
+            console.log('Detected columns:', columns);
+            setDetectedColumns(columns);
+            // Select all columns by default
+            setFields(columns);
+            setShowFields(true);
+            setIsDetectingColumns(false);
+            return;
           }
         }
       }
       
-      // Now fetch first rows with the correct config and split
+      console.log('Info endpoint failed, trying fallback...');
+      
+      // Fallback: try to get first rows if info endpoint failed
       const response = await fetch(
-        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(datasetId)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}`
+        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(datasetId)}&config=default&split=train`
       );
+      
+      console.log('First rows response status:', response.status);
       
       if (response.ok) {
         const data = await response.json();
+        console.log('First rows data:', data);
+        
         if (data.first_rows && data.first_rows.length > 0) {
           const columns = Object.keys(data.first_rows[0]);
+          console.log('Detected columns from first rows:', columns);
           setDetectedColumns(columns);
-          // Select all columns by default
           setFields(columns);
           setShowFields(true);
         }
@@ -240,6 +259,7 @@ export function TranslatorPage() {
 
   // Select a dataset from search results
   const handleSelectDataset = (dataset: HFDataset) => {
+    console.log('Selected dataset:', dataset.id);
     setSelectedDataset(dataset);
     setDatasetName(dataset.id);
     setSearchQuery(dataset.id);
@@ -606,15 +626,18 @@ export function TranslatorPage() {
                 onClick={() => setShowFields(!showFields)}
                 className="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-blue-500 transition-colors"
               >
-                {showFields ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                {showFields || detectedColumns.length > 0 || isDetectingColumns ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 {t(language, 'translator.fields')}
                 {detectedColumns.length > 0 && (
                   <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300">
                     {fields.length}/{detectedColumns.length}
                   </span>
                 )}
+                {isDetectingColumns && (
+                  <Loader2 className="w-3 h-3 animate-spin text-blue-500" />
+                )}
               </button>
-              {showFields && (
+              {(showFields || detectedColumns.length > 0 || isDetectingColumns) && (
                 <div className="mt-2 p-3 glass-card rounded-xl">
                   {isDetectingColumns ? (
                     <div className="flex items-center justify-center py-4">
@@ -668,9 +691,19 @@ export function TranslatorPage() {
                       </div>
                     </>
                   ) : (
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {t(language, 'translator.fields.noDataset')}
-                    </p>
+                    <div className="text-center py-2">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
+                        {datasetName ? t(language, 'translator.fields.detectionFailed') : t(language, 'translator.fields.noDataset')}
+                      </p>
+                      {datasetName && (
+                        <button
+                          onClick={() => detectColumns(datasetName)}
+                          className="text-xs text-blue-500 hover:text-blue-600 transition-colors underline"
+                        >
+                          {t(language, 'translator.fields.retry')}
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
