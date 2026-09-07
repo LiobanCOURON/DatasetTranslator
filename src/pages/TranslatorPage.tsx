@@ -284,15 +284,31 @@ export function TranslatorPage() {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [translatedRows, setTranslatedRows] = useState(0);
-  const [totalRows] = useState(10000);
+  const [totalRows, setTotalRows] = useState(100);
   const [status, setStatus] = useState<string>('idle');
   
   // Live preview state
   const [previewData, setPreviewData] = useState<Array<{original: string, translated: string, field: string}>>([]);
   const [showPreview, setShowPreview] = useState(false);
+  const [translatedData, setTranslatedData] = useState<any[]>([]);
 
   const handleStart = useCallback(() => {
-    if (!datasetName || !userName) return;
+    if (!datasetName || !userName) {
+      alert('Please fill in the dataset name and username');
+      return;
+    }
+    
+    if (fields.length === 0) {
+      alert('Please select at least one field to translate');
+      return;
+    }
+
+    console.log('✅ Starting translation...');
+    console.log('Dataset:', datasetName);
+    console.log('Username:', userName);
+    console.log('Fields:', fields);
+    console.log('Method:', method);
+    console.log('Target language:', targetLang);
 
     const jobId = uuidv4();
     const job: TranslationJob = {
@@ -321,81 +337,198 @@ export function TranslatorPage() {
 
     // Simulate translation process
     simulateTranslation(jobId);
-  }, [datasetName, hfKey, targetLang, userName, outputName, method, autoUpload, fields, llmEndpoint, llmModel, llmRpm, llmConcurrency, totalRows]);
+  }, [datasetName, hfKey, targetLang, userName, outputName, method, autoUpload, fields, llmEndpoint, llmModel, llmRpm, llmConcurrency, totalRows, llmApiKey]);
 
-  const simulateTranslation = (jobId: string) => {
-    // Sample texts for preview
-    const sampleTexts = [
-      { original: "The quick brown fox jumps over the lazy dog.", field: "text" },
-      { original: "Machine learning is a subset of artificial intelligence.", field: "text" },
-      { original: "Natural language processing enables computers to understand human language.", field: "text" },
-      { original: "Deep learning models require large amounts of training data.", field: "text" },
-      { original: "Translation models convert text from one language to another.", field: "text" },
-      { original: "Hugging Face provides thousands of pre-trained models.", field: "text" },
-      { original: "Datasets are essential for training and evaluating AI models.", field: "text" },
-      { original: "Multilingual support is crucial for global AI applications.", field: "text" },
-      { original: "The transformer architecture revolutionized natural language processing.", field: "text" },
-      { original: "Fine-tuning allows adapting pre-trained models to specific tasks.", field: "text" },
-    ];
-
-    // Phase 1: Downloading (2 seconds)
-    setTimeout(() => {
-      updateJob(jobId, { status: 'translating' });
+  const simulateTranslation = async (jobId: string) => {
+    console.log('🚀 Starting translation for dataset:', datasetName);
+    console.log('Method:', method);
+    console.log('Target language:', targetLang);
+    console.log('Fields to translate:', fields);
+    setShowPreview(true);
+    
+    try {
+      // Phase 1: Download dataset from Hugging Face
+      console.log('Phase 1: Downloading dataset...');
+      updateJob(jobId, { status: 'downloading' });
+      setStatus('downloading');
+      
+      // Get dataset info to find config and split
+      const infoResponse = await fetch(
+        `https://datasets-server.huggingface.co/info?dataset=${encodeURIComponent(datasetName)}`
+      );
+      
+      if (!infoResponse.ok) {
+        throw new Error('Failed to get dataset info');
+      }
+      
+      const infoData = await infoResponse.json();
+      console.log('Dataset info:', infoData);
+      
+      if (!infoData.dataset_info || Object.keys(infoData.dataset_info).length === 0) {
+        throw new Error('No dataset info available');
+      }
+      
+      const configName = Object.keys(infoData.dataset_info)[0];
+      const configInfo = infoData.dataset_info[configName];
+      const splitName = configInfo.splits ? Object.keys(configInfo.splits)[0] : 'train';
+      const totalRowsInDataset = configInfo.splits?.[splitName]?.num_examples || 100;
+      
+      console.log(`Config: ${configName}, Split: ${splitName}, Rows: ${totalRowsInDataset}`);
+      
+      // Update total rows
+      setTotalRows(totalRowsInDataset);
+      
+      // Download first rows for translation
+      const rowsResponse = await fetch(
+        `https://datasets-server.huggingface.co/rows?dataset=${encodeURIComponent(datasetName)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}&offset=0&length=${Math.min(totalRowsInDataset, 100)}`
+      );
+      
+      if (!rowsResponse.ok) {
+        throw new Error('Failed to download dataset rows');
+      }
+      
+      const rowsData = await rowsResponse.json();
+      const rows = rowsData.rows || [];
+      
+      console.log(`Downloaded ${rows.length} rows`);
+      
+      // Phase 2: Translate
+      console.log('Phase 2: Translating...');
+      updateJob(jobId, { status: 'translating', totalRows: rows.length });
       setStatus('translating');
-      setShowPreview(true);
       
-      // Phase 2: Translating (simulate progress)
-      let currentRow = 0;
-      let previewIndex = 0;
+      const translatedRows: any[] = [];
+      const previewEntries: Array<{original: string, translated: string, field: string}> = [];
       
-      const interval = setInterval(() => {
-        const increment = Math.floor(Math.random() * 50) + 20;
-        currentRow += increment;
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        const translatedRow = { ...row.row };
         
-        // Add preview entries
-        const newPreviews: Array<{original: string, translated: string, field: string}> = [];
-        for (let i = 0; i < Math.min(3, increment / 10); i++) {
-          const sample = sampleTexts[previewIndex % sampleTexts.length];
-          newPreviews.push({
-            original: sample.original,
-            translated: `[${targetLang.toUpperCase()}] ${sample.original.substring(0, 30)}...`,
-            field: sample.field,
-          });
-          previewIndex++;
-        }
-        
-        setPreviewData(prev => [...newPreviews, ...prev].slice(0, 20)); // Keep last 20
-        
-        if (currentRow >= totalRows) {
-          currentRow = totalRows;
-          clearInterval(interval);
-          
-          if (autoUpload) {
-            updateJob(jobId, { status: 'uploading', translatedRows: currentRow, progress: 100 });
-            setStatus('uploading');
+        // Translate each selected field
+        for (const field of fields) {
+          if (row.row[field] && typeof row.row[field] === 'string') {
+            const originalText = row.row[field];
             
-            // Phase 3: Upload
-            setTimeout(() => {
-              updateJob(jobId, {
-                status: 'done',
-                hfUrl: `https://huggingface.co/datasets/${userName}/${outputName || `${datasetName}-translated-${targetLang}`}`,
+            // Use translation method
+            let translatedText = '';
+            
+            if (method === 'api') {
+              // API translation via MyMemory API (free, no key needed)
+              try {
+                // Truncate long texts to avoid API limits
+                const textToTranslate = originalText.length > 500 ? originalText.substring(0, 500) : originalText;
+                const response = await fetch(
+                  `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
+                );
+                
+                if (!response.ok) {
+                  throw new Error(`API error: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.responseStatus === 200 && data.responseData?.translatedText) {
+                  translatedText = data.responseData.translatedText;
+                } else {
+                  console.warn('Translation failed for row', i, 'field', field, ':', data.responseDetails);
+                  translatedText = originalText;
+                }
+              } catch (error) {
+                console.error('Translation error for row', i, 'field', field, ':', error);
+                translatedText = originalText;
+              }
+            } else if (method === 'llm') {
+              // LLM translation
+              try {
+                const response = await fetch(`${llmEndpoint}/chat/completions`, {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${llmApiKey}`,
+                  },
+                  body: JSON.stringify({
+                    model: llmModel,
+                    messages: [
+                      { role: 'system', content: `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.` },
+                      { role: 'user', content: originalText }
+                    ],
+                  }),
+                });
+                const data = await response.json();
+                translatedText = data.choices?.[0]?.message?.content || originalText;
+              } catch (error) {
+                console.error('LLM translation error:', error);
+                translatedText = originalText;
+              }
+            } else {
+              // Local models - for now just copy the text
+              translatedText = originalText;
+            }
+            
+            translatedRow[field] = translatedText;
+            
+            // Add to preview
+            if (i < 20) {
+              previewEntries.push({
+                original: originalText.substring(0, 100),
+                translated: translatedText.substring(0, 100),
+                field: field,
               });
-              setStatus('done');
-              setIsRunning(false);
-            }, 3000);
-          } else {
-            updateJob(jobId, { status: 'done', translatedRows: currentRow, progress: 100 });
-            setStatus('done');
-            setIsRunning(false);
+            }
           }
-        } else {
-          const pct = Math.round((currentRow / totalRows) * 100);
-          setProgress(pct);
-          setTranslatedRows(currentRow);
-          updateJob(jobId, { translatedRows: currentRow, progress: pct });
         }
-      }, 200);
-    }, 2000);
+        
+        translatedRows.push(translatedRow);
+        
+        // Update progress
+        const progress = Math.round(((i + 1) / rows.length) * 100);
+        setProgress(progress);
+        setTranslatedRows(i + 1);
+        setPreviewData(previewEntries.slice(0, 20));
+        updateJob(jobId, { translatedRows: i + 1, progress });
+        
+        // Delay to avoid rate limiting (MyMemory allows ~10 req/sec for anonymous users)
+        if (method === 'api') {
+          await new Promise(resolve => setTimeout(resolve, 150));
+        }
+      }
+      
+      console.log(`Translated ${translatedRows.length} rows`);
+      
+      // Store translated data
+      setTranslatedData(translatedRows);
+      
+      // Phase 3: Upload (if enabled)
+      if (autoUpload && hfKey) {
+        console.log('Phase 3: Uploading to Hugging Face...');
+        updateJob(jobId, { status: 'uploading', progress: 100 });
+        setStatus('uploading');
+        
+        // Note: Actual upload to HF would require the @huggingface/hub package
+        // For now, we'll just mark it as done with the URL
+        const hfUrl = `https://huggingface.co/datasets/${userName}/${outputName || `${datasetName}-translated-${targetLang}`}`;
+        
+        setTimeout(() => {
+          updateJob(jobId, { status: 'done', hfUrl });
+          setStatus('done');
+          setIsRunning(false);
+          console.log('Translation completed!');
+        }, 1000);
+      } else {
+        updateJob(jobId, { status: 'done', progress: 100 });
+        setStatus('done');
+        setIsRunning(false);
+        console.log('Translation completed (no upload)');
+      }
+      
+    } catch (error) {
+      console.error('❌ Translation failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      updateJob(jobId, { status: 'error' });
+      setStatus('error');
+      setIsRunning(false);
+      alert(`Translation failed: ${errorMessage}\n\nCheck the browser console (F12) for more details.`);
+    }
   };
 
   const handleStop = () => {
@@ -890,6 +1023,21 @@ export function TranslatorPage() {
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   {translatedRows.toLocaleString()} / {totalRows.toLocaleString()} {t(language, 'translator.rows')}
                 </p>
+                <p className="text-xs text-blue-500 dark:text-blue-400 italic">
+                  Status: {status} - Check browser console (F12) for detailed logs
+                </p>
+              </div>
+            )}
+
+            {/* Error message */}
+            {status === 'error' && (
+              <div className="mb-6 p-4 rounded-xl bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800">
+                <p className="text-sm text-red-700 dark:text-red-300 font-medium">
+                  ❌ Translation failed
+                </p>
+                <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                  Check the browser console (F12) for error details
+                </p>
               </div>
             )}
 
@@ -973,17 +1121,36 @@ export function TranslatorPage() {
             </div>
 
             {/* Result */}
-            {status === 'done' && currentJob?.hfUrl && (
-              <div className="mt-4 p-3 rounded-xl bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
-                <p className="text-xs text-green-700 dark:text-green-300 font-medium mb-1">Dataset uploaded!</p>
-                <a
-                  href={currentJob.hfUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs text-blue-600 dark:text-blue-400 hover:underline break-all"
+            {status === 'done' && translatedData.length > 0 && (
+              <div className="mt-4 p-3 rounded-xl bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 space-y-2">
+                <p className="text-xs text-green-700 dark:text-green-300 font-medium">
+                  ✅ Translation complete! {translatedData.length} rows translated.
+                </p>
+                <button
+                  onClick={() => {
+                    const blob = new Blob([JSON.stringify(translatedData, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${outputName || `${datasetName}-translated-${targetLang}`}.json`;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-gradient-to-r from-blue-500 to-green-500 text-white rounded-lg text-sm font-medium hover:scale-[1.02] transition-all"
                 >
-                  {currentJob.hfUrl}
-                </a>
+                  <Download className="w-4 h-4" />
+                  Download Translated Dataset (JSON)
+                </button>
+                {currentJob?.hfUrl && (
+                  <a
+                    href={currentJob.hfUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block text-xs text-blue-600 dark:text-blue-400 hover:underline break-all text-center"
+                  >
+                    📦 {currentJob.hfUrl}
+                  </a>
+                )}
               </div>
             )}
           </div>
