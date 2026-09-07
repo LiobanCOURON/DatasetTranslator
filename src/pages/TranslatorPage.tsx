@@ -309,6 +309,10 @@ export function TranslatorPage() {
   const [previewData, setPreviewData] = useState<Array<{original: string, translated: string, field: string}>>([]);
   const [showPreview, setShowPreview] = useState(false);
   const [translatedData, setTranslatedData] = useState<any[]>([]);
+  
+  // Translation statistics
+  const [translationSuccessCount, setTranslationSuccessCount] = useState(0);
+  const [translationFailCount, setTranslationFailCount] = useState(0);
   const [modelLoading, setModelLoading] = useState(false);
   const [modelLoaded, setModelLoaded] = useState(false);
 
@@ -383,9 +387,38 @@ export function TranslatorPage() {
     return true;
   };
 
+  // Verify if translation actually happened
+  const verifyTranslation = (original: string, translated: string): boolean => {
+    if (!translated || translated.trim() === '') {
+      return false;
+    }
+    
+    // If texts are identical, translation failed
+    if (original.trim() === translated.trim()) {
+      return false;
+    }
+    
+    // Check similarity (simple character comparison)
+    const minLength = Math.min(original.length, translated.length);
+    let matchingChars = 0;
+    for (let i = 0; i < minLength; i++) {
+      if (original[i] === translated[i]) {
+        matchingChars++;
+      }
+    }
+    
+    const similarity = matchingChars / Math.max(original.length, translated.length);
+    
+    // If more than 90% similar, consider it not translated
+    return similarity < 0.9;
+  };
+
   const translateWithLocalModel = async (text: string, sourceLang: string, targetLang: string): Promise<string> => {
-    // Use LibreTranslate API (free, open-source)
+    console.log(`🧠 Attempting local model translation: ${sourceLang} -> ${targetLang}`);
+    
+    // Try LibreTranslate API (free, open-source)
     try {
+      console.log('📡 Calling LibreTranslate API...');
       const response = await fetch('https://libretranslate.com/translate', {
         method: 'POST',
         headers: {
@@ -399,30 +432,51 @@ export function TranslatorPage() {
         }),
       });
       
+      console.log('📥 LibreTranslate response status:', response.status);
+      
       if (!response.ok) {
-        throw new Error(`LibreTranslate error: ${response.status}`);
+        throw new Error(`LibreTranslate error: ${response.status} ${response.statusText}`);
       }
       
       const data = await response.json();
-      return data.translatedText || text;
-    } catch (error) {
-      console.error('Local model translation error:', error);
-      // Fallback: try MyMemory API
-      try {
-        const fallbackResponse = await fetch(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|${targetLang}`
-        );
-        if (fallbackResponse.ok) {
-          const fallbackData = await fallbackResponse.json();
-          if (fallbackData.responseStatus === 200 && fallbackData.responseData?.translatedText) {
-            return fallbackData.responseData.translatedText;
-          }
-        }
-      } catch (fallbackError) {
-        console.error('Fallback translation also failed:', fallbackError);
+      console.log('📦 LibreTranslate response:', data);
+      
+      if (data.translatedText && data.translatedText.trim() !== '') {
+        console.log('✅ LibreTranslate translation successful');
+        return data.translatedText;
+      } else {
+        throw new Error('Empty translation from LibreTranslate');
       }
-      return text;
+    } catch (error) {
+      console.error('❌ LibreTranslate failed:', error);
     }
+    
+    // Fallback: try MyMemory API
+    try {
+      console.log('📡 Falling back to MyMemory API...');
+      const fallbackResponse = await fetch(
+        `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|${targetLang}`
+      );
+      
+      console.log('📥 MyMemory response status:', fallbackResponse.status);
+      
+      if (fallbackResponse.ok) {
+        const fallbackData = await fallbackResponse.json();
+        console.log('📦 MyMemory response:', fallbackData);
+        
+        if (fallbackData.responseStatus === 200 && fallbackData.responseData?.translatedText) {
+          console.log('✅ MyMemory fallback translation successful');
+          return fallbackData.responseData.translatedText;
+        } else {
+          throw new Error(`MyMemory error: ${fallbackData.responseDetails || 'Unknown error'}`);
+        }
+      }
+    } catch (fallbackError) {
+      console.error('❌ MyMemory fallback also failed:', fallbackError);
+    }
+    
+    console.error('❌ All translation methods failed, returning original text');
+    return text;
   };
 
   const simulateTranslation = async (jobId: string) => {
@@ -486,6 +540,15 @@ export function TranslatorPage() {
       const previewEntries: Array<{original: string, translated: string, field: string}> = [];
       const batchSize = 100; // API limit per request
       const BUFFER_SIZE = 5; // Keep 5 batches in buffer (500 rows max)
+      
+      // Translation statistics
+      let translationSuccessCount = 0;
+      let translationFailCount = 0;
+      let totalTranslationsAttempted = 0;
+      
+      // Reset React state counters
+      setTranslationSuccessCount(0);
+      setTranslationFailCount(0);
       
       // Buffer for downloaded batches (producer-consumer pattern)
       interface BatchData {
@@ -575,98 +638,228 @@ export function TranslatorPage() {
                 // API translation via MyMemory API (free, no key needed)
                 let retries = 0;
                 const maxRetries = 3;
+                let translationSuccess = false;
                 
-                while (retries < maxRetries) {
+                while (retries < maxRetries && !translationSuccess) {
                   try {
-                    console.log(`🌐 Translating with API (attempt ${retries + 1}/${maxRetries})...`);
+                    console.log(`\n🌐 === API Translation Attempt ${retries + 1}/${maxRetries} ===`);
+                    console.log(`📝 Original text: "${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}"`);
+                    console.log(`🎯 Target language: ${targetLang}`);
                     
                     // Truncate long texts to avoid API limits
                     const textToTranslate = originalText.length > 500 ? originalText.substring(0, 500) : originalText;
+                    
+                    console.log('📡 Sending request to MyMemory API...');
                     const response = await fetch(
                       `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
                     );
                     
+                    console.log(`📥 Response status: ${response.status} ${response.statusText}`);
+                    
                     if (response.status === 429) {
                       const waitTime = (retries + 1) * 3000; // 3s, 6s, 9s
-                      console.warn(`⚠️ Rate limit exceeded, waiting ${waitTime/1000}s...`);
+                      console.warn(`⚠️ Rate limit exceeded (429), waiting ${waitTime/1000}s before retry...`);
                       await new Promise(resolve => setTimeout(resolve, waitTime));
                       retries++;
                       continue;
                     }
                     
                     if (!response.ok) {
-                      throw new Error(`API error: ${response.status}`);
+                      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                     }
                     
                     const data = await response.json();
+                    console.log('📦 API response received:', JSON.stringify(data, null, 2));
                     
                     if (data.responseStatus === 200 && data.responseData?.translatedText) {
-                      translatedText = data.responseData.translatedText;
-                      console.log('✅ API translation successful');
-                      break; // Success, exit retry loop
+                      const translated = data.responseData.translatedText;
+                      console.log(`✨ Translation received: "${translated.substring(0, 100)}${translated.length > 100 ? '...' : ''}"`);
+                      
+                      // Verify translation actually happened
+                      if (verifyTranslation(originalText, translated)) {
+                        translatedText = translated;
+                        translationSuccess = true;
+                        console.log('✅ Translation verified and successful!');
+                      } else {
+                        console.warn('⚠️ Translation verification failed - text appears unchanged');
+                        if (retries < maxRetries - 1) {
+                          console.log('🔄 Retrying...');
+                          await new Promise(resolve => setTimeout(resolve, 1000));
+                          retries++;
+                        } else {
+                          console.error('❌ All retries exhausted - keeping original text');
+                          translatedText = originalText;
+                        }
+                      }
                     } else {
-                      console.warn('⚠️ Translation failed:', data.responseDetails);
+                      console.warn('⚠️ Invalid API response:', data.responseDetails || 'No translated text');
                       if (retries < maxRetries - 1) {
                         await new Promise(resolve => setTimeout(resolve, 1000));
                         retries++;
                       } else {
+                        console.error('❌ All retries exhausted - keeping original text');
                         translatedText = originalText;
                       }
                     }
                   } catch (error) {
                     console.error(`❌ Translation error (attempt ${retries + 1}):`, error);
                     if (retries < maxRetries - 1) {
+                      console.log('🔄 Retrying after error...');
                       await new Promise(resolve => setTimeout(resolve, 1000));
                       retries++;
                     } else {
+                      console.error('❌ All retries exhausted - keeping original text');
                       translatedText = originalText;
                     }
                   }
                 }
               } else if (method === 'llm') {
                 // LLM translation
-                try {
-                  console.log(`🤖 Translating with LLM (${llmModel})...`);
-                  const response = await fetch(`${llmEndpoint}/chat/completions`, {
-                    method: 'POST',
-                    headers: {
-                      'Content-Type': 'application/json',
-                      'Authorization': `Bearer ${llmApiKey}`,
-                    },
-                    body: JSON.stringify({
-                      model: llmModel,
-                      messages: [
-                        { role: 'system', content: `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.` },
-                        { role: 'user', content: originalText }
-                      ],
-                    }),
-                  });
-                  
-                  if (!response.ok) {
-                    throw new Error(`LLM API error: ${response.status}`);
+                let retries = 0;
+                const maxRetries = 2;
+                let translationSuccess = false;
+                
+                while (retries < maxRetries && !translationSuccess) {
+                  try {
+                    console.log(`\n🤖 === LLM Translation Attempt ${retries + 1}/${maxRetries} ===`);
+                    console.log(`📝 Original text: "${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}"`);
+                    console.log(`🎯 Target language: ${targetLang}`);
+                    console.log(`🔧 Model: ${llmModel}`);
+                    console.log(`🔗 Endpoint: ${llmEndpoint}`);
+                    
+                    console.log('📡 Sending request to LLM API...');
+                    const response = await fetch(`${llmEndpoint}/chat/completions`, {
+                      method: 'POST',
+                      headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${llmApiKey}`,
+                      },
+                      body: JSON.stringify({
+                        model: llmModel,
+                        messages: [
+                          { role: 'system', content: `You are a translator. Translate the following text to ${targetLang}. Only output the translation, nothing else.` },
+                          { role: 'user', content: originalText }
+                        ],
+                      }),
+                    });
+                    
+                    console.log(`📥 Response status: ${response.status} ${response.statusText}`);
+                    
+                    if (!response.ok) {
+                      const errorText = await response.text();
+                      throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
+                    }
+                    
+                    const data = await response.json();
+                    console.log('📦 LLM response received:', JSON.stringify(data, null, 2));
+                    
+                    const translated = data.choices?.[0]?.message?.content;
+                    
+                    if (translated && translated.trim() !== '') {
+                      console.log(`✨ Translation received: "${translated.substring(0, 100)}${translated.length > 100 ? '...' : ''}"`);
+                      
+                      // Verify translation actually happened
+                      if (verifyTranslation(originalText, translated)) {
+                        translatedText = translated;
+                        translationSuccess = true;
+                        console.log('✅ Translation verified and successful!');
+                      } else {
+                        console.warn('⚠️ Translation verification failed - text appears unchanged');
+                        if (retries < maxRetries - 1) {
+                          console.log('🔄 Retrying...');
+                          retries++;
+                        } else {
+                          console.error('❌ All retries exhausted - keeping original text');
+                          translatedText = originalText;
+                        }
+                      }
+                    } else {
+                      console.warn('⚠️ Empty or invalid LLM response');
+                      if (retries < maxRetries - 1) {
+                        retries++;
+                      } else {
+                        console.error('❌ All retries exhausted - keeping original text');
+                        translatedText = originalText;
+                      }
+                    }
+                  } catch (error) {
+                    console.error(`❌ LLM translation error (attempt ${retries + 1}):`, error);
+                    if (retries < maxRetries - 1) {
+                      console.log('🔄 Retrying after error...');
+                      retries++;
+                    } else {
+                      console.error('❌ All retries exhausted - keeping original text');
+                      translatedText = originalText;
+                    }
                   }
-                  
-                  const data = await response.json();
-                  translatedText = data.choices?.[0]?.message?.content || originalText;
-                  console.log('✅ LLM translation successful');
-                } catch (error) {
-                  console.error('❌ LLM translation error:', error);
-                  translatedText = originalText;
                 }
               } else if (method === 'small' || method === 'best') {
                 // Local models (small or best)
-                try {
-                  const modelName = method === 'small' ? 'Small Model (<500M params)' : 'Best Model (Helsinki-NLP)';
-                  console.log(`🧠 Translating with ${modelName}...`);
-                  translatedText = await translateWithLocalModel(originalText, 'en', targetLang);
-                  console.log('✅ Local model translation successful');
-                } catch (error) {
-                  console.error('❌ Local model translation error:', error);
-                  translatedText = originalText;
+                let retries = 0;
+                const maxRetries = 2;
+                let translationSuccess = false;
+                
+                while (retries < maxRetries && !translationSuccess) {
+                  try {
+                    const modelName = method === 'small' ? 'Small Model (<500M params)' : 'Best Model (Helsinki-NLP)';
+                    console.log(`\n🧠 === ${modelName} Translation Attempt ${retries + 1}/${maxRetries} ===`);
+                    console.log(`📝 Original text: "${originalText.substring(0, 100)}${originalText.length > 100 ? '...' : ''}"`);
+                    console.log(`🎯 Target language: ${targetLang}`);
+                    
+                    const translated = await translateWithLocalModel(originalText, 'en', targetLang);
+                    
+                    if (translated && translated.trim() !== '') {
+                      console.log(`✨ Translation received: "${translated.substring(0, 100)}${translated.length > 100 ? '...' : ''}"`);
+                      
+                      // Verify translation actually happened
+                      if (verifyTranslation(originalText, translated)) {
+                        translatedText = translated;
+                        translationSuccess = true;
+                        console.log('✅ Translation verified and successful!');
+                      } else {
+                        console.warn('⚠️ Translation verification failed - text appears unchanged');
+                        if (retries < maxRetries - 1) {
+                          console.log('🔄 Retrying...');
+                          retries++;
+                        } else {
+                          console.error('❌ All retries exhausted - keeping original text');
+                          translatedText = originalText;
+                        }
+                      }
+                    } else {
+                      console.warn('⚠️ Empty translation from local model');
+                      if (retries < maxRetries - 1) {
+                        retries++;
+                      } else {
+                        console.error('❌ All retries exhausted - keeping original text');
+                        translatedText = originalText;
+                      }
+                    }
+                  } catch (error) {
+                    console.error(`❌ Local model translation error (attempt ${retries + 1}):`, error);
+                    if (retries < maxRetries - 1) {
+                      console.log('🔄 Retrying after error...');
+                      retries++;
+                    } else {
+                      console.error('❌ All retries exhausted - keeping original text');
+                      translatedText = originalText;
+                    }
+                  }
                 }
               }
               
               translatedRow[field] = translatedText;
+              
+              // Update translation statistics
+              totalTranslationsAttempted++;
+              if (verifyTranslation(originalText, translatedText)) {
+                translationSuccessCount++;
+                setTranslationSuccessCount(prev => prev + 1);
+              } else {
+                translationFailCount++;
+                setTranslationFailCount(prev => prev + 1);
+                console.warn(`⚠️ Translation failed for field "${field}" in row ${globalRowIndex + i}`);
+              }
               
               // Add to preview (keep only first 20 translations)
               if (previewEntries.length < 20) {
@@ -707,11 +900,24 @@ export function TranslatorPage() {
       translateBatches()
     ]);
     
-    console.log(`✅ Translated all ${translatedRows.length} rows (parallel streaming)`);
+      console.log(`\n${'='.repeat(60)}`);
+      console.log(`✅ Translation completed!`);
+      console.log(`${'='.repeat(60)}`);
+      console.log(`📊 Translation Statistics:`);
+      console.log(`   • Total rows processed: ${translatedRows.length}`);
+      console.log(`   • Total translations attempted: ${totalTranslationsAttempted}`);
+      console.log(`   • Successful translations: ${translationSuccessCount} (${Math.round((translationSuccessCount/totalTranslationsAttempted)*100)}%)`);
+      console.log(`   • Failed translations: ${translationFailCount} (${Math.round((translationFailCount/totalTranslationsAttempted)*100)}%)`);
+      console.log(`${'='.repeat(60)}\n`);
       
       // Store translated data
       setTranslatedData(translatedRows);
       
+      // Show warning if too many translations failed
+      const failRate = (translationFailCount / totalTranslationsAttempted) * 100;
+      if (failRate > 50) {
+        console.error(`⚠️ WARNING: ${failRate.toFixed(1)}% of translations failed! Check your API configuration.`);
+      }      
       // Phase 3: Upload (if enabled)
       if (autoUpload && hfKey) {
         console.log('Phase 3: Uploading to Hugging Face...');
@@ -1451,10 +1657,47 @@ export function TranslatorPage() {
 
             {/* Result */}
             {status === 'done' && translatedData.length > 0 && (
-              <div className="mt-4 p-3 rounded-xl bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 space-y-2">
-                <p className="text-xs text-green-700 dark:text-green-300 font-medium">
-                  ✅ Translation complete! {translatedData.length} rows translated.
-                </p>
+              <div className="mt-4 space-y-3">
+                {/* Translation Statistics */}
+                <div className="p-4 rounded-xl bg-gradient-to-br from-blue-50 to-green-50 dark:from-blue-900/20 dark:to-green-900/20 border border-blue-200 dark:border-blue-800">
+                  <h4 className="text-sm font-semibold text-gray-800 dark:text-gray-100 mb-3 flex items-center gap-2">
+                    📊 Translation Statistics
+                  </h4>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Total rows processed:</span>
+                      <span className="font-medium text-gray-800 dark:text-gray-200">{translatedData.length}</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Successful translations:</span>
+                      <span className="font-medium text-green-600 dark:text-green-400">
+                        {translationSuccessCount} ({Math.round((translationSuccessCount/Math.max(translationSuccessCount + translationFailCount, 1))*100)}%)
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-gray-600 dark:text-gray-400">Failed translations:</span>
+                      <span className={`font-medium ${translationFailCount > 0 ? 'text-red-600 dark:text-red-400' : 'text-gray-800 dark:text-gray-200'}`}>
+                        {translationFailCount} ({Math.round((translationFailCount/Math.max(translationSuccessCount + translationFailCount, 1))*100)}%)
+                      </span>
+                    </div>
+                  </div>
+                  {translationFailCount > 0 && (
+                    <div className="mt-3 p-2 rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800">
+                      <p className="text-xs text-yellow-700 dark:text-yellow-300">
+                        ⚠️ Some translations failed. Check browser console (F12) for details.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Success message */}
+                <div className="p-3 rounded-xl bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800">
+                  <p className="text-xs text-green-700 dark:text-green-300 font-medium">
+                    ✅ Translation complete!
+                  </p>
+                </div>
+
+                {/* Download button */}
                 <button
                   onClick={() => {
                     const blob = new Blob([JSON.stringify(translatedData, null, 2)], { type: 'application/json' });
@@ -1470,14 +1713,16 @@ export function TranslatorPage() {
                   <Download className="w-4 h-4" />
                   Download Translated Dataset (JSON)
                 </button>
+
+                {/* HF URL */}
                 {currentJob?.hfUrl && (
                   <a
                     href={currentJob.hfUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="block text-xs text-blue-600 dark:text-blue-400 hover:underline break-all text-center"
+                    className="block text-xs text-blue-600 dark:text-blue-400 hover:underline break-all text-center p-2 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800"
                   >
-                    📦 {currentJob.hfUrl}
+                    📦 View on Hugging Face: {currentJob.hfUrl}
                   </a>
                 )}
               </div>
