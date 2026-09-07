@@ -409,6 +409,14 @@ export function TranslatorPage() {
           if (row.row[field] && typeof row.row[field] === 'string') {
             const originalText = row.row[field];
             
+            // Optimization: Skip translation for single-element cells (1 word or less)
+            const wordCount = originalText.trim().split(/\s+/).length;
+            if (wordCount <= 1) {
+              console.log(`Skipping translation for single-element cell: "${originalText}"`);
+              translatedRow[field] = originalText;
+              continue;
+            }
+            
             // Use translation method
             let translatedText = '';
             
