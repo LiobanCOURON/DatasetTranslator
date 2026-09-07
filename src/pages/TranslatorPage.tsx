@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAppStore, TranslationMethod, TranslationJob } from '../store';
 import { t } from '../i18n';
@@ -19,7 +19,24 @@ import {
   Bot,
   Globe,
   Database,
+  Search,
+  X,
+  ExternalLink,
+  Download,
+  Users,
+  FileText,
 } from 'lucide-react';
+
+// Hugging Face Dataset interface
+interface HFDataset {
+  id: string;
+  author: string;
+  lastModified: string;
+  likes: number;
+  trending: number;
+  tags: string[];
+  downloads: number;
+}
 
 const targetLanguages = [
   { code: 'fr', name: 'French' },
@@ -70,6 +87,86 @@ export function TranslatorPage() {
   const [llmModel, setLlmModel] = useState('gpt-4o-mini');
   const [llmRpm, setLlmRpm] = useState(60);
   const [llmConcurrency, setLlmConcurrency] = useState(5);
+
+  // HF Search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<HFDataset[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [showDropdown, setShowDropdown] = useState(false);
+  const [selectedDataset, setSelectedDataset] = useState<HFDataset | null>(null);
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  // Debounced search on Hugging Face
+  const searchHuggingFace = useCallback(async (query: string) => {
+    if (!query || query.length < 2) {
+      setSearchResults([]);
+      setShowDropdown(false);
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const response = await fetch(
+        `https://huggingface.co/api/datasets?search=${encodeURIComponent(query)}&limit=10&sort=downloads&direction=-1`
+      );
+      if (response.ok) {
+        const data = await response.json();
+        setSearchResults(data);
+        setShowDropdown(true);
+      }
+    } catch (err) {
+      console.error('HF search error:', err);
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
+
+  // Handle search input with debounce
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    setSelectedDataset(null);
+    
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (value.length >= 2) {
+      searchTimeoutRef.current = setTimeout(() => {
+        searchHuggingFace(value);
+      }, 300);
+    } else {
+      setSearchResults([]);
+      setShowDropdown(false);
+    }
+  };
+
+  // Select a dataset from search results
+  const handleSelectDataset = (dataset: HFDataset) => {
+    setSelectedDataset(dataset);
+    setDatasetName(dataset.id);
+    setSearchQuery(dataset.id);
+    setShowDropdown(false);
+  };
+
+  // Clear selection
+  const handleClearSelection = () => {
+    setSelectedDataset(null);
+    setDatasetName('');
+    setSearchQuery('');
+    setSearchResults([]);
+  };
 
   // Simulation state
   const [isRunning, setIsRunning] = useState(false);
@@ -201,17 +298,128 @@ export function TranslatorPage() {
             </h3>
             
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
+              <div className="relative" ref={dropdownRef}>
                 <label className="block text-sm font-medium text-gray-600 dark:text-gray-300 mb-1">
                   {t(language, 'translator.datasetName')} *
                 </label>
-                <input
-                  type="text"
-                  value={datasetName}
-                  onChange={(e) => setDatasetName(e.target.value)}
-                  placeholder={t(language, 'translator.datasetName.placeholder')}
-                  className="w-full glass-input rounded-xl px-4 py-2.5 text-sm bg-white/50 dark:bg-white/10 border border-white/30 dark:border-white/10 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 outline-none transition-all"
-                />
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => handleSearchChange(e.target.value)}
+                    onFocus={() => searchResults.length > 0 && setShowDropdown(true)}
+                    placeholder={t(language, 'translator.datasetName.placeholder')}
+                    className="w-full glass-input rounded-xl pl-10 pr-10 py-2.5 text-sm bg-white/50 dark:bg-white/10 border border-white/30 dark:border-white/10 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 outline-none transition-all"
+                  />
+                  {isSearching && (
+                    <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-blue-400 animate-spin" />
+                  )}
+                  {selectedDataset && !isSearching && (
+                    <button
+                      onClick={handleClearSelection}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-red-400 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+
+                {/* Selected dataset info */}
+                {selectedDataset && (
+                  <div className="mt-2 p-3 rounded-xl bg-gradient-to-r from-blue-500/10 to-green-500/10 border border-blue-400/30 dark:border-blue-400/20">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-200 truncate">
+                        {selectedDataset.id}
+                      </span>
+                      <a
+                        href={`https://huggingface.co/datasets/${selectedDataset.id}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="ml-auto text-blue-500 hover:text-blue-600 transition-colors flex-shrink-0"
+                      >
+                        <ExternalLink className="w-3.5 h-3.5" />
+                      </a>
+                    </div>
+                    <div className="flex items-center gap-3 mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+                      <span className="flex items-center gap-1">
+                        <Users className="w-3 h-3" />
+                        {selectedDataset.author}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Download className="w-3 h-3" />
+                        {selectedDataset.downloads?.toLocaleString() || '0'}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        ❤️ {selectedDataset.likes || 0}
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Search results dropdown */}
+                {showDropdown && searchResults.length > 0 && (
+                  <div className="absolute z-50 w-full mt-2 max-h-80 overflow-y-auto rounded-xl bg-white/90 dark:bg-gray-900/95 backdrop-blur-xl border border-white/40 dark:border-white/10 shadow-2xl shadow-black/20">
+                    {searchResults.map((dataset) => (
+                      <button
+                        key={dataset.id}
+                        onClick={() => handleSelectDataset(dataset)}
+                        className="w-full text-left px-4 py-3 hover:bg-blue-50 dark:hover:bg-blue-900/20 transition-colors border-b border-gray-100 dark:border-gray-800 last:border-b-0"
+                      >
+                        <div className="flex items-start gap-2">
+                          <Database className="w-4 h-4 text-blue-500 mt-0.5 flex-shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">
+                              {dataset.id}
+                            </p>
+                            <div className="flex items-center gap-2 mt-1 text-xs text-gray-500 dark:text-gray-400">
+                              <span className="flex items-center gap-1">
+                                <Users className="w-3 h-3" />
+                                {dataset.author}
+                              </span>
+                              <span className="flex items-center gap-1">
+                                <Download className="w-3 h-3" />
+                                {dataset.downloads?.toLocaleString() || '0'}
+                              </span>
+                              <span>❤️ {dataset.likes || 0}</span>
+                            </div>
+                            {dataset.tags && dataset.tags.length > 0 && (
+                              <div className="flex flex-wrap gap-1 mt-1.5">
+                                {dataset.tags.slice(0, 3).map((tag) => (
+                                  <span
+                                    key={tag}
+                                    className="px-1.5 py-0.5 text-[10px] rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300"
+                                  >
+                                    {tag}
+                                  </span>
+                                ))}
+                                {dataset.tags.length > 3 && (
+                                  <span className="text-[10px] text-gray-400">
+                                    +{dataset.tags.length - 3}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* No results message */}
+                {showDropdown && searchResults.length === 0 && !isSearching && searchQuery.length >= 2 && (
+                  <div className="absolute z-50 w-full mt-2 rounded-xl bg-white/90 dark:bg-gray-900/95 backdrop-blur-xl border border-white/40 dark:border-white/10 shadow-2xl p-4 text-center">
+                    <FileText className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      No datasets found for "{searchQuery}"
+                    </p>
+                    <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                      You can still type the dataset name manually
+                    </p>
+                  </div>
+                )}
               </div>
               
               <div>
