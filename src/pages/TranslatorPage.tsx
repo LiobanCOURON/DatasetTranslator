@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAppStore, TranslationMethod, TranslationJob } from '../store';
 import { t } from '../i18n';
 import { v4 as uuidv4 } from 'uuid';
+import { translate } from 'google-translate-api-browser';
 import {
   Home,
   History,
