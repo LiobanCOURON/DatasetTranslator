@@ -24,6 +24,8 @@ import {
   ExternalLink,
   Download,
   Lock,
+  Eye,
+  ArrowRight,
   Users,
   FileText,
 } from 'lucide-react';
@@ -284,6 +286,10 @@ export function TranslatorPage() {
   const [translatedRows, setTranslatedRows] = useState(0);
   const [totalRows] = useState(10000);
   const [status, setStatus] = useState<string>('idle');
+  
+  // Live preview state
+  const [previewData, setPreviewData] = useState<Array<{original: string, translated: string, field: string}>>([]);
+  const [showPreview, setShowPreview] = useState(false);
 
   const handleStart = useCallback(() => {
     if (!datasetName || !userName) return;
@@ -318,15 +324,48 @@ export function TranslatorPage() {
   }, [datasetName, hfKey, targetLang, userName, outputName, method, autoUpload, fields, llmEndpoint, llmModel, llmRpm, llmConcurrency, totalRows]);
 
   const simulateTranslation = (jobId: string) => {
+    // Sample texts for preview
+    const sampleTexts = [
+      { original: "The quick brown fox jumps over the lazy dog.", field: "text" },
+      { original: "Machine learning is a subset of artificial intelligence.", field: "text" },
+      { original: "Natural language processing enables computers to understand human language.", field: "text" },
+      { original: "Deep learning models require large amounts of training data.", field: "text" },
+      { original: "Translation models convert text from one language to another.", field: "text" },
+      { original: "Hugging Face provides thousands of pre-trained models.", field: "text" },
+      { original: "Datasets are essential for training and evaluating AI models.", field: "text" },
+      { original: "Multilingual support is crucial for global AI applications.", field: "text" },
+      { original: "The transformer architecture revolutionized natural language processing.", field: "text" },
+      { original: "Fine-tuning allows adapting pre-trained models to specific tasks.", field: "text" },
+    ];
+
     // Phase 1: Downloading (2 seconds)
     setTimeout(() => {
       updateJob(jobId, { status: 'translating' });
       setStatus('translating');
+      setShowPreview(true);
       
       // Phase 2: Translating (simulate progress)
       let currentRow = 0;
+      let previewIndex = 0;
+      
       const interval = setInterval(() => {
-        currentRow += Math.floor(Math.random() * 50) + 20;
+        const increment = Math.floor(Math.random() * 50) + 20;
+        currentRow += increment;
+        
+        // Add preview entries
+        const newPreviews: Array<{original: string, translated: string, field: string}> = [];
+        for (let i = 0; i < Math.min(3, increment / 10); i++) {
+          const sample = sampleTexts[previewIndex % sampleTexts.length];
+          newPreviews.push({
+            original: sample.original,
+            translated: `[${targetLang.toUpperCase()}] ${sample.original.substring(0, 30)}...`,
+            field: sample.field,
+          });
+          previewIndex++;
+        }
+        
+        setPreviewData(prev => [...newPreviews, ...prev].slice(0, 20)); // Keep last 20
+        
         if (currentRow >= totalRows) {
           currentRow = totalRows;
           clearInterval(interval);
@@ -851,6 +890,63 @@ export function TranslatorPage() {
                 <p className="text-xs text-gray-500 dark:text-gray-400">
                   {translatedRows.toLocaleString()} / {totalRows.toLocaleString()} {t(language, 'translator.rows')}
                 </p>
+              </div>
+            )}
+
+            {/* Live Preview */}
+            {showPreview && previewData.length > 0 && (isRunning || status === 'done') && (
+              <div className="glass-card rounded-2xl p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-semibold text-gray-800 dark:text-gray-100 flex items-center gap-2">
+                    <Eye className="w-5 h-5 text-blue-500" />
+                    {t(language, 'translator.preview.title')}
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-300 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                      LIVE
+                    </span>
+                  </h3>
+                  <button
+                    onClick={() => setShowPreview(false)}
+                    className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                <div className="space-y-3 max-h-96 overflow-y-auto pr-2">
+                  {previewData.map((item, index) => (
+                    <div
+                      key={index}
+                      className="p-3 rounded-xl bg-white/30 dark:bg-white/5 border border-white/20 dark:border-white/10 space-y-2"
+                    >
+                      <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                        <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 font-mono">
+                          {item.field}
+                        </span>
+                        <span>#{translatedRows - index}</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        <div>
+                          <p className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">Original:</p>
+                          <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+                            {item.original}
+                          </p>
+                        </div>
+                        <div className="flex items-start gap-1.5">
+                          <ArrowRight className="w-3.5 h-3.5 text-green-500 mt-0.5 flex-shrink-0" />
+                          <div className="flex-1">
+                            <p className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">
+                              {t(language, 'translator.preview.translated')} ({targetLang.toUpperCase()}):
+                            </p>
+                            <p className="text-sm text-green-600 dark:text-green-400 leading-relaxed font-medium">
+                              {item.translated}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

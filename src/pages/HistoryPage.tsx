@@ -16,6 +16,8 @@ import {
   Pause,
   X,
   Database,
+  Eye,
+  ArrowRight,
 } from 'lucide-react';
 
 export function HistoryPage() {
@@ -23,6 +25,19 @@ export function HistoryPage() {
   const navigate = useNavigate();
   const [selectedJob, setSelectedJob] = useState<TranslationJob | null>(null);
   const [showDetail, setShowDetail] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  
+  // Sample preview data for history view
+  const getSamplePreview = () => {
+    const samples = [
+      { original: "The quick brown fox jumps over the lazy dog.", translated: `[${selectedJob?.targetLang.toUpperCase() || 'XX'}] The quick brown fox...`, field: "text" },
+      { original: "Machine learning is a subset of artificial intelligence.", translated: `[${selectedJob?.targetLang.toUpperCase() || 'XX'}] Machine learning is...`, field: "text" },
+      { original: "Natural language processing enables computers to understand human language.", translated: `[${selectedJob?.targetLang.toUpperCase() || 'XX'}] Natural language...`, field: "text" },
+      { original: "Deep learning models require large amounts of training data.", translated: `[${selectedJob?.targetLang.toUpperCase() || 'XX'}] Deep learning models...`, field: "text" },
+      { original: "Translation models convert text from one language to another.", translated: `[${selectedJob?.targetLang.toUpperCase() || 'XX'}] Translation models...`, field: "text" },
+    ];
+    return samples;
+  };
 
   const getStatusBadge = (status: string) => {
     const configs: Record<string, { icon: any; color: string; bg: string }> = {
@@ -266,6 +281,54 @@ export function HistoryPage() {
                   </a>
                 </div>
               )}
+
+              {/* Preview Section */}
+              <div>
+                <button
+                  onClick={() => setShowPreview(!showPreview)}
+                  className="flex items-center gap-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-blue-500 transition-colors w-full"
+                >
+                  <Eye className="w-4 h-4" />
+                  {t(language, 'history.preview')}
+                </button>
+                
+                {showPreview && (
+                  <div className="mt-3 space-y-2 max-h-60 overflow-y-auto">
+                    {getSamplePreview().map((item, index) => (
+                      <div
+                        key={index}
+                        className="p-3 rounded-xl bg-white/30 dark:bg-white/5 border border-white/20 dark:border-white/10 space-y-2"
+                      >
+                        <div className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400">
+                          <span className="px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-300 font-mono">
+                            {item.field}
+                          </span>
+                          <span>#{selectedJob.translatedRows - index}</span>
+                        </div>
+                        <div className="space-y-1.5">
+                          <div>
+                            <p className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">Original:</p>
+                            <p className="text-sm text-gray-700 dark:text-gray-300 leading-relaxed">
+                              {item.original}
+                            </p>
+                          </div>
+                          <div className="flex items-start gap-1.5">
+                            <ArrowRight className="w-3.5 h-3.5 text-green-500 mt-0.5 flex-shrink-0" />
+                            <div className="flex-1">
+                              <p className="text-xs text-gray-400 dark:text-gray-500 mb-0.5">
+                                {t(language, 'translator.preview.translated')} ({selectedJob.targetLang.toUpperCase()}):
+                              </p>
+                              <p className="text-sm text-green-600 dark:text-green-400 leading-relaxed font-medium">
+                                {item.translated}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Actions */}
               <div className="flex gap-2 pt-2">
