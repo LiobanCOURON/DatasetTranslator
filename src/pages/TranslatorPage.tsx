@@ -23,6 +23,7 @@ import {
   X,
   ExternalLink,
   Download,
+  Lock,
   Users,
   FileText,
 } from 'lucide-react';
@@ -72,7 +73,12 @@ export function TranslatorPage() {
 
   // Form state
   const [datasetName, setDatasetName] = useState('');
-  const [hfKey, setHfKey] = useState('');
+  const [hfKey, setHfKey] = useState(() => {
+    return localStorage.getItem('hf_token') || '';
+  });
+  const [isTokenSaved, setIsTokenSaved] = useState(() => {
+    return !!localStorage.getItem('hf_token');
+  });
   const [targetLang, setTargetLang] = useState('fr');
   const [userName, setUserName] = useState('');
   const [outputName, setOutputName] = useState('');
@@ -81,6 +87,20 @@ export function TranslatorPage() {
   const [fields, setFields] = useState<string[]>(['text']);
   const [showFields, setShowFields] = useState(false);
   
+  // Save HF token to localStorage
+  useEffect(() => {
+    if (hfKey) {
+      localStorage.setItem('hf_token', hfKey);
+      setIsTokenSaved(true);
+    }
+  }, [hfKey]);
+
+  const handleClearToken = () => {
+    localStorage.removeItem('hf_token');
+    setHfKey('');
+    setIsTokenSaved(false);
+  };
+
   // LLM config
   const [llmEndpoint, setLlmEndpoint] = useState('https://api.openai.com/v1');
   const [llmApiKey, setLlmApiKey] = useState('');
@@ -424,15 +444,38 @@ export function TranslatorPage() {
               
               <div>
                 <label className="block text-sm font-medium text-gray-600 dark:text-gray-300 mb-1">
-                  {t(language, 'translator.hfKey')}
+                  <span className="flex items-center gap-1.5">
+                    {t(language, 'translator.hfKey')}
+                    {isTokenSaved && (
+                      <span className="flex items-center gap-1 text-xs text-green-500 font-normal">
+                        <Lock className="w-3 h-3" />
+                        {t(language, 'translator.hfKey.saved')}
+                      </span>
+                    )}
+                  </span>
                 </label>
-                <input
-                  type="password"
-                  value={hfKey}
-                  onChange={(e) => setHfKey(e.target.value)}
-                  placeholder={t(language, 'translator.hfKey.placeholder')}
-                  className="w-full glass-input rounded-xl px-4 py-2.5 text-sm bg-white/50 dark:bg-white/10 border border-white/30 dark:border-white/10 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 outline-none transition-all"
-                />
+                <div className="relative">
+                  <input
+                    type="password"
+                    value={hfKey}
+                    onChange={(e) => setHfKey(e.target.value)}
+                    placeholder={t(language, 'translator.hfKey.placeholder')}
+                    className="w-full glass-input rounded-xl px-4 py-2.5 text-sm bg-white/50 dark:bg-white/10 border border-white/30 dark:border-white/10 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 outline-none transition-all pr-20"
+                  />
+                  {hfKey && (
+                    <button
+                      type="button"
+                      onClick={handleClearToken}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg transition-colors"
+                      title={t(language, 'translator.hfKey.clear')}
+                    >
+                      {t(language, 'translator.hfKey.clear')}
+                    </button>
+                  )}
+                </div>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  {t(language, 'translator.hfKey.hint')}
+                </p>
               </div>
               
               <div>
