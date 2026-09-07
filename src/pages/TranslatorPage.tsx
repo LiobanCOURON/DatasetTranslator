@@ -573,45 +573,55 @@ export function TranslatorPage() {
               
               if (method === 'api') {
                 // API translation via MyMemory API (free, no key needed)
-                try {
-                  // Truncate long texts to avoid API limits
-                  const textToTranslate = originalText.length > 500 ? originalText.substring(0, 500) : originalText;
-                  const response = await fetch(
-                    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
-                  );
-                  
-                  if (response.status === 429) {
-                    console.warn('Rate limit exceeded, waiting 5 seconds...');
-                    await new Promise(resolve => setTimeout(resolve, 5000));
-                    // Retry once after waiting
-                    const retryResponse = await fetch(
+                let retries = 0;
+                const maxRetries = 3;
+                
+                while (retries < maxRetries) {
+                  try {
+                    console.log(`🌐 Translating with API (attempt ${retries + 1}/${maxRetries})...`);
+                    
+                    // Truncate long texts to avoid API limits
+                    const textToTranslate = originalText.length > 500 ? originalText.substring(0, 500) : originalText;
+                    const response = await fetch(
                       `https://api.mymemory.translated.net/get?q=${encodeURIComponent(textToTranslate)}&langpair=en|${targetLang}`
                     );
-                    if (retryResponse.ok) {
-                      const retryData = await retryResponse.json();
-                      if (retryData.responseStatus === 200 && retryData.responseData?.translatedText) {
-                        translatedText = retryData.responseData.translatedText;
-                      } else {
-                        translatedText = originalText;
-                      }
-                    } else {
-                      translatedText = originalText;
+                    
+                    if (response.status === 429) {
+                      const waitTime = (retries + 1) * 3000; // 3s, 6s, 9s
+                      console.warn(`⚠️ Rate limit exceeded, waiting ${waitTime/1000}s...`);
+                      await new Promise(resolve => setTimeout(resolve, waitTime));
+                      retries++;
+                      continue;
                     }
-                  } else if (!response.ok) {
-                    throw new Error(`API error: ${response.status}`);
-                  } else {
+                    
+                    if (!response.ok) {
+                      throw new Error(`API error: ${response.status}`);
+                    }
+                    
                     const data = await response.json();
                     
                     if (data.responseStatus === 200 && data.responseData?.translatedText) {
                       translatedText = data.responseData.translatedText;
+                      console.log('✅ API translation successful');
+                      break; // Success, exit retry loop
                     } else {
-                      console.warn('Translation failed for row', globalRowIndex + i, 'field', field, ':', data.responseDetails);
+                      console.warn('⚠️ Translation failed:', data.responseDetails);
+                      if (retries < maxRetries - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        retries++;
+                      } else {
+                        translatedText = originalText;
+                      }
+                    }
+                  } catch (error) {
+                    console.error(`❌ Translation error (attempt ${retries + 1}):`, error);
+                    if (retries < maxRetries - 1) {
+                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      retries++;
+                    } else {
                       translatedText = originalText;
                     }
                   }
-                } catch (error) {
-                  console.error('Translation error for row', globalRowIndex + i, 'field', field, ':', error);
-                  translatedText = originalText;
                 }
               } else if (method === 'llm') {
                 // LLM translation
@@ -1303,11 +1313,11 @@ export function TranslatorPage() {
                 <div className="flex items-center gap-2 mb-2">
                   <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
                   <p className="text-sm text-blue-700 dark:text-blue-300 font-medium">
-                    Loading translation model...
+                    {t(language, 'translator.model.loading')}
                   </p>
                 </div>
                 <p className="text-xs text-blue-600 dark:text-blue-400">
-                  {method === 'small' ? 'Loading small model (<500M parameters)' : 'Loading best model (Helsinki-NLP)'}
+                  {method === 'small' ? t(language, 'translator.model.loading.small') : t(language, 'translator.model.loading.best')}
                 </p>
               </div>
             )}
@@ -1318,7 +1328,7 @@ export function TranslatorPage() {
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-green-500" />
                   <p className="text-xs text-green-700 dark:text-green-300">
-                    Model loaded and ready
+                    {t(language, 'translator.model.loaded')}
                   </p>
                 </div>
               </div>
