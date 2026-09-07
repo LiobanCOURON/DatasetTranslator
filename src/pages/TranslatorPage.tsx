@@ -80,7 +80,7 @@ export function TranslatorPage() {
     return !!localStorage.getItem('hf_token');
   });
   const [targetLang, setTargetLang] = useState('fr');
-  const [userName, setUserName] = useState('');
+  const [userName, setUserName] = useState(() => localStorage.getItem('hf_username') || '');
   const [outputName, setOutputName] = useState('');
   const [method, setMethod] = useState<TranslationMethod>('api');
   const [autoUpload, setAutoUpload] = useState(true);
@@ -96,6 +96,13 @@ export function TranslatorPage() {
       setIsTokenSaved(true);
     }
   }, [hfKey]);
+
+  // Save HF username to localStorage
+  useEffect(() => {
+    if (userName) {
+      localStorage.setItem('hf_username', userName);
+    }
+  }, [userName]);
 
   const handleClearToken = () => {
     localStorage.removeItem('hf_token');
@@ -118,6 +125,53 @@ export function TranslatorPage() {
   const [selectedDataset, setSelectedDataset] = useState<HFDataset | null>(null);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Detect columns from dataset - defined early to be used in useEffect
+  const detectColumns = async (datasetId: string) => {
+    setIsDetectingColumns(true);
+    try {
+      // Try to get dataset info first to find available configs
+      const infoResponse = await fetch(
+        `https://datasets-server.huggingface.co/info?dataset=${encodeURIComponent(datasetId)}`
+      );
+      
+      let configName = 'default';
+      let splitName = 'train';
+      
+      if (infoResponse.ok) {
+        const infoData = await infoResponse.json();
+        if (infoData.dataset_info && Object.keys(infoData.dataset_info).length > 0) {
+          // Get first available config
+          configName = Object.keys(infoData.dataset_info)[0];
+          const configInfo = infoData.dataset_info[configName];
+          if (configInfo && configInfo.splits && Object.keys(configInfo.splits).length > 0) {
+            // Get first available split
+            splitName = Object.keys(configInfo.splits)[0];
+          }
+        }
+      }
+      
+      // Now fetch first rows with the correct config and split
+      const response = await fetch(
+        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(datasetId)}&config=${encodeURIComponent(configName)}&split=${encodeURIComponent(splitName)}`
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (data.first_rows && data.first_rows.length > 0) {
+          const columns = Object.keys(data.first_rows[0]);
+          setDetectedColumns(columns);
+          // Select all columns by default
+          setFields(columns);
+          setShowFields(true);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to detect columns:', error);
+    } finally {
+      setIsDetectingColumns(false);
+    }
+  };
 
   // Auto-detect columns when dataset name changes (manual input)
   useEffect(() => {
@@ -202,30 +256,6 @@ export function TranslatorPage() {
     setSearchResults([]);
     setDetectedColumns([]);
     setFields([]);
-  };
-
-  // Detect columns from dataset
-  const detectColumns = async (datasetId: string) => {
-    setIsDetectingColumns(true);
-    try {
-      const response = await fetch(
-        `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(datasetId)}&config=default&split=train`
-      );
-      if (response.ok) {
-        const data = await response.json();
-        if (data.first_rows && data.first_rows.length > 0) {
-          const columns = Object.keys(data.first_rows[0]);
-          setDetectedColumns(columns);
-          // Select all columns by default
-          setFields(columns);
-          setShowFields(true);
-        }
-      }
-    } catch (error) {
-      console.error('Failed to detect columns:', error);
-    } finally {
-      setIsDetectingColumns(false);
-    }
   };
 
   // Simulation state
@@ -537,7 +567,15 @@ export function TranslatorPage() {
               
               <div>
                 <label className="block text-sm font-medium text-gray-600 dark:text-gray-300 mb-1">
-                  {t(language, 'translator.userName')} *
+                  <span className="flex items-center gap-1.5">
+                    {t(language, 'translator.userName')} *
+                    {userName && (
+                      <span className="flex items-center gap-1 text-xs text-green-500 font-normal">
+                        <Lock className="w-3 h-3" />
+                        {t(language, 'translator.userName.saved')}
+                      </span>
+                    )}
+                  </span>
                 </label>
                 <input
                   type="text"
