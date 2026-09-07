@@ -90,6 +90,7 @@ export function TranslatorPage() {
   const [showFields, setShowFields] = useState(false);
   const [detectedColumns, setDetectedColumns] = useState<string[]>([]);
   const [isDetectingColumns, setIsDetectingColumns] = useState(false);
+  const [maxRows, setMaxRows] = useState<string>(''); // Empty = all rows
   
   // Save HF token to localStorage
   useEffect(() => {
@@ -395,14 +396,18 @@ export function TranslatorPage() {
       const splitName = configInfo.splits ? Object.keys(configInfo.splits)[0] : 'train';
       const totalRowsInDataset = configInfo.splits?.[splitName]?.num_examples || 100;
       
-      console.log(`Config: ${configName}, Split: ${splitName}, Rows: ${totalRowsInDataset}`);
+      // Apply max rows limit if specified
+      const maxRowsNum = maxRows ? parseInt(maxRows) : totalRowsInDataset;
+      const effectiveRows = Math.min(maxRowsNum, totalRowsInDataset);
+      
+      console.log(`Config: ${configName}, Split: ${splitName}, Total rows: ${totalRowsInDataset}, Processing: ${effectiveRows}`);
       
       // Update total rows
-      setTotalRows(totalRowsInDataset);
+      setTotalRows(effectiveRows);
       
       // Phase 2: Parallel streaming with producer-consumer pattern
-      console.log('Phase 2: Starting parallel streaming...');
-      updateJob(jobId, { status: 'translating', totalRows: totalRowsInDataset });
+      console.log(`Phase 2: Starting parallel streaming (${effectiveRows} rows)...`);
+      updateJob(jobId, { status: 'translating', totalRows: effectiveRows });
       setStatus('translating');
       setProgress(0);
       
@@ -423,13 +428,13 @@ export function TranslatorPage() {
       // PRODUCER: Download batches in parallel
       const downloadBatches = async () => {
         let offset = 0;
-        while (offset < totalRowsInDataset) {
+        while (offset < effectiveRows) {
           // Wait if buffer is full
           while (downloadBuffer.length >= BUFFER_SIZE) {
             await new Promise(resolve => setTimeout(resolve, 100));
           }
           
-          const currentBatchSize = Math.min(batchSize, totalRowsInDataset - offset);
+          const currentBatchSize = Math.min(batchSize, effectiveRows - offset);
           
           try {
             const rowsResponse = await fetch(
@@ -581,7 +586,7 @@ export function TranslatorPage() {
           translatedRows.push(translatedRow);
           
           // Update progress
-          const progress = Math.round(((globalRowIndex + i + 1) / totalRowsInDataset) * 100);
+          const progress = Math.round(((globalRowIndex + i + 1) / effectiveRows) * 100);
           setProgress(progress);
           setTranslatedRows(globalRowIndex + i + 1);
           setPreviewData(previewEntries.slice(0, 20));
@@ -594,7 +599,7 @@ export function TranslatorPage() {
         }
         
         globalRowIndex += batch.rows.length;
-        console.log(`✅ Batch translated. Progress: ${globalRowIndex}/${totalRowsInDataset}`);
+        console.log(`✅ Batch translated. Progress: ${globalRowIndex}/${effectiveRows}`);
       }
       
       console.log('✅ All batches translated');
@@ -973,6 +978,23 @@ export function TranslatorPage() {
                   placeholder={t(language, 'translator.outputName.placeholder')}
                   className="w-full glass-input rounded-xl px-4 py-2.5 text-sm bg-white/50 dark:bg-white/10 border border-white/30 dark:border-white/10 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 outline-none transition-all"
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-600 dark:text-gray-300 mb-1">
+                  {t(language, 'translator.maxRows')}
+                </label>
+                <input
+                  type="number"
+                  value={maxRows}
+                  onChange={(e) => setMaxRows(e.target.value)}
+                  placeholder={t(language, 'translator.maxRows.placeholder')}
+                  min="1"
+                  className="w-full glass-input rounded-xl px-4 py-2.5 text-sm bg-white/50 dark:bg-white/10 border border-white/30 dark:border-white/10 focus:border-blue-400 focus:ring-2 focus:ring-blue-400/20 outline-none transition-all"
+                />
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-1">
+                  {t(language, 'translator.maxRows.help')}
+                </p>
               </div>
             </div>
 
